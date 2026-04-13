@@ -1,0 +1,127 @@
+{
+  "system_config": {
+    "version": "1.0.0",
+    "bot_name": "TradingBot"
+  },
+  "message_types": {
+    "trade_setup": {
+      "description": "Trade setup from OCR",
+      "platform_rules": {
+        "telegram": true,
+        "twitter": true
+      },
+      "formatting": {
+        "telegram": "\ud83d\udcc9 {symbol} ({asset_class})\\n\ud83d\udd0e Direction: {side}\\n\u26a1\ufe0f Entry: {entry}\\n\ud83c\udfaf Target: {target}\\n\ud83d\uded1 Stop: {stop_loss}",
+        "twitter": "\ud83d\udcc9 {symbol} ({asset_class})\\nDirection: {side}\\nEntry: {entry}\\nTarget: {target}\\nStop: {stop_loss}"
+      },
+      "create_trade_ledger": true
+    },
+    "partial_close_specific": {
+      "description": "Partial close",
+      "platform_rules": {
+        "telegram": true,
+        "twitter": true
+      },
+      "formatting": {
+        "telegram": "\ud83d\udd39 PARTIAL CLOSE ({percentage}%)\\n{tree_lines}\\n\\n\u2022 Booked: {pnl}",
+        "twitter": "\ud83d\udd39 PARTIAL ({percentage}%)\\n{tree_lines}\\nBooked: {pnl}"
+      },
+      "fifo_format": {
+        "enabled": true,
+        "use_tree": true
+      }
+    },
+    "trade_close_specific": {
+      "description": "Trade closed",
+      "platform_rules": {
+        "telegram": true,
+        "twitter": true
+      },
+      "formatting": {
+        "telegram": "\u2705 TRADE CLOSED\\n\u2022 PnL: {pnl}",
+        "twitter": "\u2705 CLOSED\\nPnL: {pnl}"
+      }
+    },
+    "trail_update_specific": {
+      "description": "Trailing stop",
+      "platform_rules": {
+        "telegram": true,
+        "twitter": true
+      },
+      "formatting": {
+        "telegram": "\ud83d\udd01 TRAILING STOP\\n\u2022 New Stop: {new_stop}",
+        "twitter": "\ud83d\udd01 TRAILING\\nStop: {new_stop}"
+      }
+    }
+  },
+  "command_processing": {
+    "/update": {
+      "command_mapping": {
+        "TRAIL": {
+          "type": "trail_update_specific",
+          "requires_price": true,
+          "update_type": "TRAIL"
+        },
+        "CLOSED": {
+          "type": "trade_close_specific",
+          "requires_price": true,
+          "update_type": "CLOSED"
+        },
+        "CLOSE": {
+          "type": "trade_close_specific",
+          "requires_price": true,
+          "update_type": "CLOSED"
+        },
+        "PARTIAL": {
+          "type": "partial_close_specific",
+          "requires_price": true,
+          "percentage": "25",
+          "update_type": "PARTIAL"
+        },
+        "CLOSEHALF": {
+          "type": "partial_close_specific",
+          "requires_price": true,
+          "percentage": "50",
+          "update_type": "CLOSEHALF"
+        }
+      },
+      "parse_patterns": [
+        {
+          "pattern": "trail\\s+(\\d+\\.?\\d*)",
+          "command": "TRAIL",
+          "extract": [
+            "price"
+          ]
+        },
+        {
+          "pattern": "closed\\s+(\\d+\\.?\\d*)",
+          "command": "CLOSED",
+          "extract": [
+            "price"
+          ]
+        },
+        {
+          "pattern": "close\\s+(\\d+\\.?\\d*)",
+          "command": "CLOSE",
+          "extract": [
+            "price"
+          ]
+        },
+        {
+          "pattern": "partial\\s+(\\d+\\.?\\d*)",
+          "command": "PARTIAL",
+          "extract": [
+            "price"
+          ]
+        },
+        {
+          "pattern": "closehalf\\s+(\\d+\\.?\\d*)",
+          "command": "CLOSEHALF",
+          "extract": [
+            "price"
+          ]
+        }
+      ]
+    }
+  }
+}
