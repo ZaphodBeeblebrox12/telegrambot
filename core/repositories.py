@@ -1,172 +1,212 @@
-"""
-Repository layer - Data access
-"""
-from contextlib import contextmanager
-from typing import Optional, List
-from decimal import Decimal
+"""Repository pattern - Database abstraction for future PostgreSQL migration"""
+import json
+import os
+from typing import Optional, List, Dict, Any
+from pathlib import Path
+from abc import ABC, abstractmethod
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
-from .db import TradeModel, TradeEntryModel, TradeEventModel, TradeSnapshotModel, Database
-from .models import Trade, TradeEntry, TradeStatus, EntryType, TradeEvent, TradeSnapshot, EventType
+from core.models import Trade, MessageMapping
+from config.config_loader import config
 
 
-class TradeRepository:
-    def __init__(self, db: Database):
-        self.db = db
+class TradeRepository(ABC):
+    @abstractmethod
+    def save(self, trade: Trade) -> None:
+        pass
 
-    @contextmanager
-    def session(self):
-        session = self.db.get_session()
+    @abstractmethod
+    def get(self, trade_id: str) -> Optional[Trade]:
+        pass
+
+    @abstractmethod
+    def get_by_symbol(self, symbol: str, status: Optional[str] = None) -> List[Trade]:
+        pass
+
+    @abstractmethod
+    def get_open_trades(self) -> List[Trade]:
+        pass
+
+    @abstractmethod
+    def delete(self, trade_id: str) -> bool:
+        pass
+
+    @abstractmethod
+    def get_all(self) -> List[Trade]:
+        pass
+
+
+class JSONTradeRepository(TradeRepository):
+    def __init__(self, file_path: Optional[str] = None):
+        if file_path is None:
+            file_path = config.file_paths.get("trade_ledger_file", "trade_ledger.json")
+        self.file_path = Path(file_path)
+        self._ensure_file()
+
+    def _ensure_file(self):
+        if not self.file_path.exists():
+            self.file_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.file_path, "w") as f:
+                json.dump({}, f)
+
+    def _load_all(self) -> Dict[str, Any]:
         try:
-            yield session
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
+            with open(self.file_path, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            return {}
 
-    def get_by_trade_id(self, trade_id: str, session: Session) -> Optional[Trade]:
-        stmt = select(TradeModel).where(TradeModel.trade_id == trade_id)
-        model = session.execute(stmt).scalar_one_or_none()
-        return self._to_domain(model) if model else None
+    def _save_all(self, data: Dict[str, Any]):
+        with open(self.file_path, "w") as f:
+            json.dump(data, f, indent=2)
 
-    def create_trade(self, trade: Trade, initial_entry: TradeEntry, session: Session) -> Trade:
-        model = TradeModel(
-            trade_id=trade.trade_id,
-            symbol=trade.symbol,
-            side=trade.side,
-            asset_class=trade.asset_class,
-            status=trade.status.value
-        )
-        session.add(model)
-        session.flush()
+    def save(self, trade: Trade) -> None:
+        data = self._load_all()
+        data[trade.trade_id] = trade.to_dict()
+        self._save_all(data)
 
-        entry_model = TradeEntryModel(
-            trade_id=model.id,
-            entry_price=initial_entry.entry_price,
-            size=initial_entry.size,
-            closed_size=initial_entry.closed_size,
-            entry_type=initial_entry.entry_type.value,
-            sequence=1
-        )
-        session.add(entry_model)
-        session.flush()
+    def get(self, trade_id: str) -> Optional[Trade]:
+        data = self._load_all()
+        if trade_id in data:
+            return Trade.from_dict(data[trade_id])
+        return None
 
-        initial_entry.id = entry_model.id
-        initial_entry.sequence = 1
-        trade.id = model.id
-        trade.entries = [initial_entry]
+    def get_by_symbol(self, symbol: str, status: Optional[str] = None) -> List[Trade]:
+        data = self._load_all()
+        trades = []
+        for trade_data in data.values():
+            if trade_data["symbol"].upper() == symbol.upper():
+                if status is None or trade_data["status"] == status:
+                    trades.append(Trade.from_dict(trade_data))
+        return trades
 
-        return trade
+    def get_open_trades(self) -> List[Trade]:
+        data = self._load_all()
+        return [Trade.from_dict(t) for t in data.values() if t["status"] == "OPEN"]
 
-    def add_entry(self, trade_id: int, entry: TradeEntry, session: Session):
-        # Get next sequence
-        stmt = select(TradeEntryModel).where(TradeEntryModel.trade_id == trade_id)
-        existing = session.execute(stmt).scalars().all()
-        next_seq = max([e.sequence for e in existing] + [0]) + 1
+    def delete(self, trade_id: str) -> bool:
+        data = self._load_all()
+        if trade_id in data:
+            del data[trade_id]
+            self._save_all(data)
+            return True
+        return False
 
-        model = TradeEntryModel(
-            trade_id=trade_id,
-            entry_price=entry.entry_price,
-            size=entry.size,
-            closed_size=entry.closed_size,
-            entry_type=entry.entry_type.value,
-            sequence=next_seq
-        )
-        session.add(model)
-        session.flush()
-        entry.id = model.id
-        entry.sequence = next_seq
+    def get_all(self) -> List[Trade]:
+        data = self._load_all()
+        return [Trade.from_dict(t) for t in data.values()]
 
-    def update_entry_closed_size(self, entry_id: int, closed_size: Decimal, session: Session):
-        stmt = select(TradeEntryModel).where(TradeEntryModel.id == entry_id)
-        model = session.execute(stmt).scalar_one()
-        model.closed_size = closed_size
 
-    def update_trade_status(self, trade_id: int, status: TradeStatus, session: Session):
-        stmt = select(TradeModel).where(TradeModel.id == trade_id)
-        model = session.execute(stmt).scalar_one()
-        model.status = status.value
+class MessageMappingRepository(ABC):
+    @abstractmethod
+    def save(self, mapping: MessageMapping) -> None:
+        pass
 
-    def insert_event(self, trade_id: int, event: TradeEvent, session: Session):
-        import json
-        model = TradeEventModel(
-            trade_id=trade_id,
-            event_type=event.event_type.value,
-            payload=json.dumps(event.payload),
-            idempotency_key=event.idempotency_key
-        )
-        session.add(model)
+    @abstractmethod
+    def get(self, main_msg_id: int) -> Optional[MessageMapping]:
+        pass
 
-    def check_idempotency(self, key: str, session: Session) -> bool:
-        stmt = select(TradeEventModel).where(TradeEventModel.idempotency_key == key)
-        return session.execute(stmt).scalar_one_or_none() is not None
+    @abstractmethod
+    def get_by_trade_id(self, trade_id: str) -> Optional[MessageMapping]:
+        pass
 
-    def save_snapshot(self, trade_id: int, snapshot: TradeSnapshot, session: Session):
-        stmt = select(TradeSnapshotModel).where(TradeSnapshotModel.trade_id == trade_id)
-        existing = session.execute(stmt).scalar_one_or_none()
+    @abstractmethod
+    def get_children(self, parent_msg_id: int) -> List[MessageMapping]:
+        pass
 
-        if existing:
-            existing.weighted_avg_entry = snapshot.weighted_avg_entry
-            existing.total_size = snapshot.total_size
-            existing.remaining_size = snapshot.remaining_size
-            existing.current_stop = snapshot.current_stop
-            existing.current_target = snapshot.current_target
-            existing.locked_profit = snapshot.locked_profit
-            existing.total_booked_pnl = snapshot.total_booked_pnl
-        else:
-            model = TradeSnapshotModel(
-                trade_id=trade_id,
-                weighted_avg_entry=snapshot.weighted_avg_entry,
-                total_size=snapshot.total_size,
-                remaining_size=snapshot.remaining_size,
-                current_stop=snapshot.current_stop,
-                current_target=snapshot.current_target,
-                locked_profit=snapshot.locked_profit,
-                total_booked_pnl=snapshot.total_booked_pnl
-            )
-            session.add(model)
+    @abstractmethod
+    def get_all(self) -> List[MessageMapping]:
+        pass
 
-    def get_snapshot(self, trade_id: int, session: Session) -> Optional[TradeSnapshot]:
-        stmt = select(TradeSnapshotModel).where(TradeSnapshotModel.trade_id == trade_id)
-        model = session.execute(stmt).scalar_one_or_none()
+    @abstractmethod
+    def delete(self, main_msg_id: int) -> bool:
+        pass
 
-        if not model:
-            return None
 
-        return TradeSnapshot(
-            weighted_avg_entry=model.weighted_avg_entry,
-            total_size=model.total_size,
-            remaining_size=model.remaining_size,
-            current_stop=model.current_stop,
-            current_target=model.current_target,
-            locked_profit=model.locked_profit,
-            total_booked_pnl=model.total_booked_pnl
-        )
+class JSONMessageMappingRepository(MessageMappingRepository):
+    def __init__(self, file_path: Optional[str] = None):
+        if file_path is None:
+            file_path = config.file_paths.get("mappings_file", "message_mappings.json")
+        self.file_path = Path(file_path)
+        self._ensure_file()
 
-    def _to_domain(self, model: TradeModel) -> Trade:
-        entries = [
-            TradeEntry(
-                id=e.id,
-                entry_price=e.entry_price,
-                size=e.size,
-                closed_size=e.closed_size,
-                entry_type=EntryType(e.entry_type),
-                sequence=e.sequence
-            )
-            for e in model.entries
-        ]
+    def _ensure_file(self):
+        if not self.file_path.exists():
+            self.file_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.file_path, "w") as f:
+                json.dump({}, f)
 
-        return Trade(
-            id=model.id,
-            trade_id=model.trade_id,
-            symbol=model.symbol,
-            side=model.side,
-            asset_class=model.asset_class,
-            entries=entries,
-            status=TradeStatus(model.status),
-            created_at=model.created_at
-        )
+    def _load_all(self) -> Dict[str, Any]:
+        try:
+            with open(self.file_path, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            return {}
+
+    def _save_all(self, data: Dict[str, Any]):
+        with open(self.file_path, "w") as f:
+            json.dump(data, f, indent=2)
+
+    def save(self, mapping: MessageMapping) -> None:
+        data = self._load_all()
+        data[str(mapping.main_msg_id)] = mapping.to_dict()
+        self._save_all(data)
+
+    def get(self, main_msg_id: int) -> Optional[MessageMapping]:
+        data = self._load_all()
+        key = str(main_msg_id)
+        if key in data:
+            return MessageMapping.from_dict(data[key])
+        return None
+
+    def get_by_trade_id(self, trade_id: str) -> Optional[MessageMapping]:
+        data = self._load_all()
+        for mapping_data in data.values():
+            if mapping_data.get("trade_id") == trade_id:
+                return MessageMapping.from_dict(mapping_data)
+        return None
+
+    def get_children(self, parent_msg_id: int) -> List[MessageMapping]:
+        data = self._load_all()
+        children = []
+        for mapping_data in data.values():
+            if mapping_data.get("parent_main_msg_id") == parent_msg_id:
+                children.append(MessageMapping.from_dict(mapping_data))
+        return children
+
+    def get_all(self) -> List[MessageMapping]:
+        data = self._load_all()
+        return [MessageMapping.from_dict(m) for m in data.values()]
+
+    def delete(self, main_msg_id: int) -> bool:
+        data = self._load_all()
+        key = str(main_msg_id)
+        if key in data:
+            del data[key]
+            self._save_all(data)
+            return True
+        return False
+
+
+class RepositoryFactory:
+    _trade_repo: Optional[TradeRepository] = None
+    _mapping_repo: Optional[MessageMappingRepository] = None
+
+    @classmethod
+    def get_trade_repository(cls) -> TradeRepository:
+        if cls._trade_repo is None:
+            cls._trade_repo = JSONTradeRepository()
+        return cls._trade_repo
+
+    @classmethod
+    def get_mapping_repository(cls) -> MessageMappingRepository:
+        if cls._mapping_repo is None:
+            cls._mapping_repo = JSONMessageMappingRepository()
+        return cls._mapping_repo
+
+    @classmethod
+    def set_trade_repository(cls, repo: TradeRepository):
+        cls._trade_repo = repo
+
+    @classmethod
+    def set_mapping_repository(cls, repo: MessageMappingRepository):
+        cls._mapping_repo = repo

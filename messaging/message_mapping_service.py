@@ -1,245 +1,210 @@
-"""
-Message Mapping Service
-
-Links trade_id ↔ message_id for threading and reply chains.
-Integrates with MessageMapping table.
-
-Responsibilities:
-- Save message_id, chat_id, platform
-- Link trade_id ↔ message_id
-- Store parent_message_id for threading
-- Retrieve latest message for a trade
-- Support reply chains with nested replies
-- Support multiple message IDs per trade
-- Platform separation
-"""
-
-import logging
-from typing import Optional, List, Dict, Any
-from contextlib import contextmanager
+"""Config-driven Message Mapping Service - Thread and hierarchy management"""
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 
-from sqlalchemy import select, desc, and_
-from sqlalchemy.orm import Session
-
-from core.db import MessageMappingModel, Database
-
-logger = logging.getLogger(__name__)
+from config.config_loader import config
+from core.models import MessageMapping
+from core.repositories import RepositoryFactory
 
 
 class MessageMappingService:
-    """Service for managing message-to-trade mappings with full chain support."""
+    """Manages message mappings for thread tracking - Config-driven"""
 
-    def __init__(self, db: Database):
-        self.db = db
-        logger.info("MessageMappingService initialized")
+    def __init__(self):
+        self.cfg = config.reply_nesting
+        self.mapping_cfg = config.message_mapping
+        self.repo = RepositoryFactory.get_mapping_repository()
 
-    @contextmanager
-    def _session(self):
-        session = self.db.get_session()
-        try:
-            yield session
-            session.commit()
-        except Exception as e:
-            session.rollback()
-            raise
-        finally:
-            session.close()
-
-    def save_mapping(
+    def create_mapping(
         self,
-        trade_id: int,
-        platform: str,
-        message_id: str,
-        channel_id: Optional[str],
-        message_type: str,
-        parent_tg_msg_id: Optional[str] = None,
-        parent_main_msg_id: Optional[str] = None,
-        reply_to_message_id: Optional[str] = None
-    ) -> None:
-        """Save a new message mapping with full chain support.
+        main_msg_id: int,
+        tg_channel: int,
+        trade_id: Optional[str] = None,
+        ocr_symbol: Optional[str] = None,
+        asset_class: Optional[str] = None,
+        leverage_multiplier: int = 1,
+        gemini_result: Optional[Dict] = None,
+        is_position_update: bool = False,
+        is_admin_channel: bool = False,
+        parent_main_msg_id: Optional[int] = None,
+        parent_tg_msg_id: Optional[int] = None
+    ) -> MessageMapping:
+        """Create new message mapping"""
+        mapping = MessageMapping(
+            main_msg_id=main_msg_id,
+            tg_channel=tg_channel,
+            trade_id=trade_id,
+            ocr_symbol=ocr_symbol,
+            asset_class=asset_class,
+            leverage_multiplier=leverage_multiplier,
+            gemini_result=gemini_result,
+            is_position_update=is_position_update,
+            is_admin_channel=is_admin_channel,
+            parent_main_msg_id=parent_main_msg_id,
+            parent_tg_msg_id=parent_tg_msg_id
+        )
 
-        Args:
-            trade_id: Internal trade ID
-            platform: Platform name (telegram, twitter, etc.)
-            message_id: Platform-specific message ID
-            channel_id: Channel/chat ID
-            message_type: Type of message (trade_setup, partial_close_specific, etc.)
-            parent_tg_msg_id: Parent Telegram message ID for threading
-            parent_main_msg_id: Parent main message ID (cross-platform)
-            reply_to_message_id: Direct reply target message ID
-        """
-        with self._session() as session:
-            mapping = MessageMappingModel(
-                trade_id=trade_id,
-                platform=platform,
-                message_id=message_id,
-                channel_id=channel_id,
-                message_type=message_type,
-                parent_tg_msg_id=parent_tg_msg_id,
-                parent_main_msg_id=parent_main_msg_id,
-                reply_to_message_id=reply_to_message_id,
-                created_at=datetime.utcnow()
-            )
-            session.add(mapping)
-            logger.info(f"Saved mapping: trade={trade_id}, msg={message_id}, platform={platform}, type={message_type}")
+        self.repo.save(mapping)
+        return mapping
 
-    def get_latest_message(
+    def get_mapping(self, main_msg_id: int) -> Optional[MessageMapping]:
+        """Get mapping by main message ID"""
+        return self.repo.get(main_msg_id)
+
+    def get_mapping_by_trade(self, trade_id: str) -> Optional[MessageMapping]:
+        """Get mapping by trade ID"""
+        return self.repo.get_by_trade_id(trade_id)
+
+    def get_thread_parent(self, mapping: MessageMapping) -> Optional[MessageMapping]:
+        """Get parent mapping in thread"""
+        if mapping.parent_main_msg_id:
+            return self.repo.get(mapping.parent_main_msg_id)
+        return None
+
+    def get_thread_children(self, main_msg_id: int) -> List[MessageMapping]:
+        """Get all child mappings in thread"""
+        return self.repo.get_children(main_msg_id)
+
+    def update_mapping(
         self,
-        trade_id: int,
-        platform: str,
-        message_type: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
-        """Get the latest message for a trade on a platform."""
-        with self._session() as session:
-            stmt = select(MessageMappingModel).where(
-                MessageMappingModel.trade_id == trade_id,
-                MessageMappingModel.platform == platform
-            )
-
-            if message_type:
-                stmt = stmt.where(MessageMappingModel.message_type == message_type)
-
-            stmt = stmt.order_by(desc(MessageMappingModel.created_at))
-            result = session.execute(stmt).scalars().first()
-
-            if result:
-                return self._mapping_to_dict(result)
+        main_msg_id: int,
+        **updates
+    ) -> Optional[MessageMapping]:
+        """Update existing mapping"""
+        mapping = self.repo.get(main_msg_id)
+        if not mapping:
             return None
 
-    def get_message_chain(
+        for key, value in updates.items():
+            if hasattr(mapping, key):
+                setattr(mapping, key, value)
+
+        self.repo.save(mapping)
+        return mapping
+
+    def add_tg_message(self, main_msg_id: int, tg_msg_id: int) -> bool:
+        """Add Telegram message ID to mapping"""
+        mapping = self.repo.get(main_msg_id)
+        if not mapping:
+            return False
+
+        if tg_msg_id not in mapping.tg_msg_ids:
+            mapping.tg_msg_ids.append(tg_msg_id)
+            self.repo.save(mapping)
+
+        return True
+
+    def set_twitter_id(
         self,
-        trade_id: int,
-        platform: str
-    ) -> List[Dict[str, Any]]:
-        """Get all messages for a trade in chronological order."""
-        with self._session() as session:
-            stmt = select(MessageMappingModel).where(
-                MessageMappingModel.trade_id == trade_id,
-                MessageMappingModel.platform == platform
-            ).order_by(MessageMappingModel.created_at)
+        main_msg_id: int,
+        tweet_id: str,
+        account: str
+    ) -> bool:
+        """Set Twitter ID for mapping"""
+        mapping = self.repo.get(main_msg_id)
+        if not mapping:
+            return False
 
-            results = session.execute(stmt).scalars().all()
-            return [self._mapping_to_dict(r) for r in results]
-
-    def get_all_messages_for_trade(
-        self,
-        trade_id: int
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        """Get all messages across all platforms for a trade."""
-        with self._session() as session:
-            stmt = select(MessageMappingModel).where(
-                MessageMappingModel.trade_id == trade_id
-            ).order_by(MessageMappingModel.created_at)
-
-            results = session.execute(stmt).scalars().all()
-
-            # Group by platform
-            by_platform = {}
-            for r in results:
-                if r.platform not in by_platform:
-                    by_platform[r.platform] = []
-                by_platform[r.platform].append(self._mapping_to_dict(r))
-
-            return by_platform
-
-    def get_parent_message_id(
-        self,
-        trade_id: int,
-        platform: str,
-        message_type: Optional[str] = None
-    ) -> Optional[str]:
-        """Get the root message ID to reply to (legacy - returns first message)."""
-        with self._session() as session:
-            stmt = select(MessageMappingModel).where(
-                MessageMappingModel.trade_id == trade_id,
-                MessageMappingModel.platform == platform
-            ).order_by(MessageMappingModel.created_at)
-
-            result = session.execute(stmt).scalars().first()
-            return result.message_id if result else None
-
-    def resolve_reply_parent(
-        self,
-        trade_id: int,
-        platform: str,
-        message_type: str,
-        reply_to_msg_id: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
-        """Resolve correct parent message for nested replies.
-
-        Logic:
-        1. If reply_to_msg_id provided, find that message and use its chain
-        2. Otherwise find the most recent message of the same type or the root
-        3. Return full parent info for proper threading
-        """
-        with self._session() as session:
-            if reply_to_msg_id:
-                # Find the specific message being replied to
-                stmt = select(MessageMappingModel).where(
-                    MessageMappingModel.trade_id == trade_id,
-                    MessageMappingModel.platform == platform,
-                    MessageMappingModel.message_id == reply_to_msg_id
-                )
-                result = session.execute(stmt).scalars().first()
-                if result:
-                    return self._mapping_to_dict(result)
-
-            # Find the most recent message for this trade/platform
-            stmt = select(MessageMappingModel).where(
-                MessageMappingModel.trade_id == trade_id,
-                MessageMappingModel.platform == platform
-            ).order_by(desc(MessageMappingModel.created_at))
-
-            result = session.execute(stmt).scalars().first()
-            if result:
-                return self._mapping_to_dict(result)
-
-            return None
-
-    def get_trade_by_message(
-        self,
-        platform: str,
-        message_id: str,
-        channel_id: Optional[str] = None
-    ) -> Optional[int]:
-        """Get trade_id by message_id (for reply handling)."""
-        with self._session() as session:
-            stmt = select(MessageMappingModel).where(
-                MessageMappingModel.platform == platform,
-                MessageMappingModel.message_id == message_id
-            )
-            if channel_id:
-                stmt = stmt.where(MessageMappingModel.channel_id == channel_id)
-
-            result = session.execute(stmt).scalars().first()
-            return result.trade_id if result else None
-
-    def get_message_by_id(
-        self,
-        platform: str,
-        message_id: str
-    ) -> Optional[Dict[str, Any]]:
-        """Get full message mapping by platform message ID."""
-        with self._session() as session:
-            stmt = select(MessageMappingModel).where(
-                MessageMappingModel.platform == platform,
-                MessageMappingModel.message_id == message_id
-            )
-            result = session.execute(stmt).scalars().first()
-            return self._mapping_to_dict(result) if result else None
-
-    def _mapping_to_dict(self, mapping: MessageMappingModel) -> Dict[str, Any]:
-        """Convert mapping model to dictionary."""
-        return {
-            "id": mapping.id,
-            "trade_id": mapping.trade_id,
-            "platform": mapping.platform,
-            "message_id": mapping.message_id,
-            "channel_id": mapping.channel_id,
-            "message_type": mapping.message_type,
-            "parent_tg_msg_id": mapping.parent_tg_msg_id,
-            "parent_main_msg_id": mapping.parent_main_msg_id,
-            "reply_to_message_id": mapping.reply_to_message_id,
-            "created_at": mapping.created_at.isoformat() if mapping.created_at else None
+        mapping.twitter = {
+            'tweet_id': tweet_id,
+            'account': account
         }
+        self.repo.save(mapping)
+        return True
+
+    def resolve_parent_for_reply(
+        self,
+        is_admin_channel: bool,
+        reply_to_msg_id: Optional[int] = None,
+        trade_id: Optional[str] = None
+    ) -> Optional[MessageMapping]:
+        """Resolve parent mapping for reply - Config-driven hierarchy"""
+        # If replying to specific message
+        if reply_to_msg_id:
+            parent = self.repo.get(reply_to_msg_id)
+            if parent:
+                return parent
+
+        # If trade ID provided, find root mapping
+        if trade_id:
+            mapping = self.repo.get_by_trade_id(trade_id)
+            if mapping:
+                # Find root of thread
+                while mapping.parent_main_msg_id:
+                    parent = self.repo.get(mapping.parent_main_msg_id)
+                    if parent:
+                        mapping = parent
+                    else:
+                        break
+                return mapping
+
+        return None
+
+    def get_nesting_level(self, mapping: MessageMapping) -> int:
+        """Get nesting level in thread hierarchy"""
+        level = 0
+        current = mapping
+
+        while current.parent_main_msg_id:
+            level += 1
+            parent = self.repo.get(current.parent_main_msg_id)
+            if not parent:
+                break
+            current = parent
+
+            if level >= self.cfg.hierarchy_levels:
+                break
+
+        return level
+
+    def should_create_thread(self, message_type: str) -> bool:
+        """Check if message type should create thread"""
+        rules = self.cfg.rules.get(message_type, {})
+        return rules.get('create_thread', False)
+
+    def should_reply_to_parent(self, message_type: str) -> bool:
+        """Check if message type should reply to parent"""
+        rules = self.cfg.rules.get(message_type, {})
+        return rules.get('reply_to_parent', False)
+
+    def get_reply_behavior(self, channel_type: str) -> Dict[str, Any]:
+        """Get reply behavior for channel type"""
+        if channel_type == 'admin':
+            return self.cfg.admin_channel_behavior
+        elif channel_type == 'target':
+            return self.cfg.target_channel_behavior
+        elif channel_type == 'twitter':
+            return self.cfg.twitter_behavior
+        return {}
+
+    def build_thread_chain(self, main_msg_id: int) -> List[MessageMapping]:
+        """Build complete thread chain from root to message"""
+        chain = []
+        current = self.repo.get(main_msg_id)
+
+        while current:
+            chain.insert(0, current)
+            if current.parent_main_msg_id:
+                current = self.repo.get(current.parent_main_msg_id)
+            else:
+                break
+
+        return chain
+
+    def delete_mapping(self, main_msg_id: int) -> bool:
+        """Delete mapping by ID"""
+        return self.repo.delete(main_msg_id)
+
+    def get_all_mappings(self) -> List[MessageMapping]:
+        """Get all mappings"""
+        return self.repo.get_all()
+
+
+# Singleton
+_mapping_service: Optional[MessageMappingService] = None
+
+def get_mapping_service() -> MessageMappingService:
+    global _mapping_service
+    if _mapping_service is None:
+        _mapping_service = MessageMappingService()
+    return _mapping_service

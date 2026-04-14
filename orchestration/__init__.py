@@ -1,20 +1,12 @@
-"""
-Orchestration module - Config-driven trading pipeline
-
-Flow: CONFIG → ROUTER → EXECUTOR → SERVICE → FORMATTER → MAPPING → TELEGRAM
-"""
-
-from .command_router import CommandRouter, CommandParseResult
-from .config_executor import ConfigExecutor, ExecutionContext
-from .formatter import MessageFormatter
-from .orchestrator import TradingPipeline, PipelineResult
+"""Orchestration module - Config-driven pipeline"""
+from orchestration.command_router import CommandRouter, get_command_router
+from orchestration.config_executor import ConfigExecutor, get_executor
+from orchestration.formatter import MessageFormatter, get_formatter
+from orchestration.orchestrator import TradingBotOrchestrator, get_orchestrator
 
 __all__ = [
-    'CommandRouter',
-    'CommandParseResult',
-    'ConfigExecutor',
-    'ExecutionContext',
-    'MessageFormatter',
-    'TradingPipeline',
-    'PipelineResult'
+    'CommandRouter', 'get_command_router',
+    'ConfigExecutor', 'get_executor',
+    'MessageFormatter', 'get_formatter',
+    'TradingBotOrchestrator', 'get_orchestrator'
 ]

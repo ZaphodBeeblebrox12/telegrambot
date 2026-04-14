@@ -1,135 +1,127 @@
-"""
-Command Router - Parse text commands into structured actions
-"""
-
-import logging
+"""Config-driven Command Router - Parses commands using config patterns"""
 import re
-import json
+from typing import Optional, Dict, Any, Tuple
 from dataclasses import dataclass
-from typing import Dict, Any, Optional
 
-logger = logging.getLogger(__name__)
-
-
-@dataclass
-class CommandParseResult:
-    message_type: str
-    command: str
-    params: Dict[str, Any]
+from config.config_loader import config
+from core.models import ParsedCommand
 
 
 class CommandRouter:
-    """Routes text commands to message types and extracts parameters from config."""
+    """Routes commands based on config-defined patterns"""
 
-    def __init__(self, config_path: str):
-        self.config_path = config_path
-        self.config = self._load_config()
-        self.patterns = self._compile_patterns()
-        self.command_mapping = self._load_command_mapping()
-        logger.info("CommandRouter initialized")
+    def __init__(self):
+        self.cfg = config
+        self.update_config = config.commands.get('/update')
+        self.command_patterns = self._compile_patterns()
 
-    def _load_config(self) -> Dict:
-        """Load configuration from JSON file."""
-        try:
-            with open(self.config_path, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to load config: {e}")
-            return {}
-
-    def _load_command_mapping(self) -> Dict:
-        """Load command mapping from config."""
-        cmd_config = self.config.get("command_processing", {})
-        update_config = cmd_config.get("/update", {})
-        return update_config.get("command_mapping", {})
-
-    def _compile_patterns(self) -> list:
-        """Compile regex patterns from config."""
-        patterns = []
-        cmd_config = self.config.get("command_processing", {})
-        update_config = cmd_config.get("/update", {})
-        parse_patterns = update_config.get("parse_patterns", [])
-
-        for p in parse_patterns:
-            try:
-                compiled = re.compile(p["pattern"], re.IGNORECASE)
-                patterns.append({
-                    "regex": compiled,
-                    "command": p["command"],
-                    "extract": p.get("extract", [])
+    def _compile_patterns(self) -> Dict[str, list]:
+        """Compile regex patterns from config"""
+        patterns = {}
+        if self.update_config and self.update_config.parse_patterns:
+            for pattern_def in self.update_config.parse_patterns:
+                cmd = pattern_def['command']
+                if cmd not in patterns:
+                    patterns[cmd] = []
+                patterns[cmd].append({
+                    'regex': re.compile(pattern_def['pattern'], re.IGNORECASE),
+                    'extract': pattern_def.get('extract', []),
+                    'has_percentage': pattern_def.get('has_percentage', False)
                 })
-            except re.error as e:
-                logger.error(f"Invalid regex pattern: {p.get('pattern')}: {e}")
-
         return patterns
 
-    def parse(self, command_text: str) -> Optional[CommandParseResult]:
-        """
-        Parse command text into structured result using config only.
-
-        Examples:
-        - "trail 1.08500" → TRAIL command
-        - "close 1.09000" → CLOSE command
-        - "partial 1.08000" → PARTIAL command
-        """
-        if not command_text:
+    def parse_update_command(self, text: str) -> Optional[ParsedCommand]:
+        """Parse /update command using config patterns"""
+        if not self.update_config:
             return None
 
-        text = command_text.strip()
-        upper_text = text.upper()
+        text_lower = text.lower().strip()
 
-        # Try regex patterns first
-        for pattern_def in self.patterns:
-            match = pattern_def["regex"].match(text)
-            if match:
-                command = pattern_def["command"]
-                params = {}
+        # Try each command pattern
+        for command, patterns in self.command_patterns.items():
+            for pattern_def in patterns:
+                match = pattern_def['regex'].search(text_lower)
+                if match:
+                    return self._build_parsed_command(
+                        command=command,
+                        match=match,
+                        pattern_def=pattern_def,
+                        raw_text=text
+                    )
 
-                # Extract named groups
-                for key in pattern_def["extract"]:
-                    try:
-                        params[key] = match.group(key)
-                    except IndexError:
-                        pass
-
-                # Get message type from mapping
-                cmd_def = self.command_mapping.get(command, {})
-                message_type = cmd_def.get("type", "unknown")
-
-                # Add default percentage if specified
-                if "percentage" in cmd_def:
-                    params["percentage"] = cmd_def["percentage"]
-
-                logger.debug(f"Matched pattern: {command} with params {params}")
-                return CommandParseResult(
-                    message_type=message_type,
-                    command=command,
-                    params=params
-                )
-
-        # Try direct command matching
-        words = upper_text.split()
-        if words:
-            first_word = words[0]
-            if first_word in self.command_mapping:
-                cmd_def = self.command_mapping[first_word]
-                params = {}
-
-                # Extract price if present
-                if len(words) > 1:
-                    try:
-                        params["price"] = words[1]
-                    except (IndexError, ValueError):
-                        pass
-
-                if "percentage" in cmd_def:
-                    params["percentage"] = cmd_def["percentage"]
-
-                return CommandParseResult(
-                    message_type=cmd_def.get("type", "unknown"),
-                    command=first_word,
-                    params=params
-                )
-
-        logger.warning(f"No pattern matched for: {text}")
         return None
+
+    def _build_parsed_command(
+        self,
+        command: str,
+        match: re.Match,
+        pattern_def: Dict[str, Any],
+        raw_text: str
+    ) -> ParsedCommand:
+        """Build ParsedCommand from regex match"""
+        extract = pattern_def.get('extract', [])
+        groups = match.groups()
+
+        parsed = ParsedCommand(
+            command='/update',
+            subcommand=command,
+            raw_text=raw_text
+        )
+
+        # Extract fields based on config
+        for i, field in enumerate(extract):
+            if i < len(groups):
+                value = groups[i]
+                if field == 'price':
+                    parsed.price = float(value)
+                elif field == 'percentage':
+                    parsed.percentage = float(value)
+                elif field == 'size_percentage':
+                    parsed.size_percentage = float(value)
+                elif field == 'note_text':
+                    parsed.note_text = value
+                elif field == 'reason':
+                    parsed.reason = value
+
+        # Get message type from command mapping
+        if self.update_config and self.update_config.command_mapping:
+            cmd_map = self.update_config.command_mapping.get(command, {})
+            parsed.message_type = cmd_map.get('type')
+            parsed.update_type = cmd_map.get('update_type')
+
+        return parsed
+
+    def get_command_config(self, command: str) -> Optional[Any]:
+        """Get command configuration from config"""
+        return config.commands.get(command)
+
+    def should_delete_command(self, command: str) -> bool:
+        """Check if command should be deleted after processing"""
+        cmd_config = self.get_command_config(command)
+        if cmd_config:
+            return cmd_config.delete_command
+        return False
+
+    def get_output_message_type(self, command: str) -> Optional[str]:
+        """Get output message type for command"""
+        cmd_config = self.get_command_config(command)
+        if cmd_config:
+            return cmd_config.output_message_type
+        return None
+
+    def requires_reply(self, command: str) -> bool:
+        """Check if command requires reply to message"""
+        cmd_config = self.get_command_config(command)
+        if cmd_config:
+            return cmd_config.requires_reply
+        return False
+
+
+# Singleton
+_router: Optional[CommandRouter] = None
+
+def get_command_router() -> CommandRouter:
+    global _router
+    if _router is None:
+        _router = CommandRouter()
+    return _router

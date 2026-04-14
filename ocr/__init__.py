@@ -1,11 +1,4 @@
-"""
-OCR module - Image analysis
-"""
+"""OCR module - Config-driven image processing"""
+from ocr.gemini_ocr import GeminiOCRService, get_ocr_service
 
-class OCRService:
-    """Placeholder OCR service."""
-
-    def analyze_image(self, image_data: bytes) -> dict:
-        """Analyze image for trade setup."""
-        # Placeholder - implement actual OCR
-        return {"setup_found": False}
+__all__ = ['GeminiOCRService', 'get_ocr_service']

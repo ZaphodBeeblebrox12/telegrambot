@@ -1,7 +1,4 @@
-"""
-Bot module - Telegram integration
-"""
-
-from .telegram_bot import TradingBot
+"""Bot module - Telegram bot integration"""
+from bot.telegram_bot import TradingBot
 
 __all__ = ['TradingBot']

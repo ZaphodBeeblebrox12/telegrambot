@@ -1,3 +1,16 @@
+# Trading Bot - Config-Driven Architecture
+# Pipeline: CONFIG → ROUTER → EXECUTOR → SERVICE → FORMATTER → MAPPING → PUBLISHER
+
+# Core
+google-generativeai>=0.3.0
 python-telegram-bot>=20.0
-sqlalchemy>=2.0.0
+tweepy>=4.14.0
+
+# Data
+pydantic>=2.0.0
+
+# Async
+aiohttp>=3.8.0
+
+# Utils
 python-dotenv>=1.0.0

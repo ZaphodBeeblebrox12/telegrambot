@@ -1,39 +1,24 @@
-"""
-Core module - Domain models and business logic
-"""
-
-from .models import (
-    Trade, 
-    TradeEntry, 
-    TradeStatus, 
-    EntryType, 
-    EventType,
-    FIFOResult,
-    TradeEvent,
-    TradeSnapshot
+"""Core module - Domain models and repositories"""
+from core.models import (
+    Trade, TradeEntry, TradeUpdate, FIFOCloseRecord,
+    OCRResult, MessageMapping, ParsedCommand,
+    TradeStatus, EntryType
 )
-from .services import TradeService
-from .repositories import TradeRepository
-from .fifo import FIFOEngine, FIFOEntryDetail
-from .snapshot import SnapshotBuilder
-from .db import Database, TradeModel, TradeEntryModel, MessageMappingModel
+from core.repositories import (
+    TradeRepository, MessageMappingRepository,
+    JSONTradeRepository, JSONMessageMappingRepository,
+    RepositoryFactory
+)
+from core.fifo import FIFOCloseManager, get_fifo_manager
+from core.services import TradeService, get_trade_service
 
 __all__ = [
-    'Trade',
-    'TradeEntry',
-    'TradeStatus',
-    'EntryType',
-    'EventType',
-    'FIFOResult',
-    'TradeEvent',
-    'TradeSnapshot',
-    'TradeService',
-    'TradeRepository',
-    'FIFOEngine',
-    'FIFOEntryDetail',
-    'SnapshotBuilder',
-    'Database',
-    'TradeModel',
-    'TradeEntryModel',
-    'MessageMappingModel'
+    'Trade', 'TradeEntry', 'TradeUpdate', 'FIFOCloseRecord',
+    'OCRResult', 'MessageMapping', 'ParsedCommand',
+    'TradeStatus', 'EntryType',
+    'TradeRepository', 'MessageMappingRepository',
+    'JSONTradeRepository', 'JSONMessageMappingRepository',
+    'RepositoryFactory',
+    'FIFOCloseManager', 'get_fifo_manager',
+    'TradeService', 'get_trade_service'
 ]
