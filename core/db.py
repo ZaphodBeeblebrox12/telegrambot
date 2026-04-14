@@ -3,7 +3,7 @@ Database layer - SQLAlchemy models
 """
 from sqlalchemy import (
     create_engine, Column, Integer, String, DateTime,
-    Numeric, ForeignKey, Text, Boolean
+    Numeric, ForeignKey, Text
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship

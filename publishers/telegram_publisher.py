@@ -1,15 +1,11 @@
-"""Telegram Publisher - Placeholder for actual implementation"""
+"""Telegram Publisher"""
 from typing import List, Dict, Any, Optional
+from config.config_loader import config
 
 class TelegramPublisher:
     """Publishes messages to Telegram channels"""
 
-    def __init__(self):
-        self.destinations = []
-
     def get_destination_channels(self) -> List[Dict[str, Any]]:
-        """Get list of destination channels"""
-        from config.config_loader import config
         channels = []
         for dest_id, dest in config.destinations.items():
             if dest.get('platform') == 'telegram':
@@ -26,10 +22,8 @@ class TelegramPublisher:
         text: str,
         reply_to_message_id: Optional[int] = None
     ) -> Optional[int]:
-        """Send text message to channel"""
-        # Implementation would use python-telegram-bot
         print(f"[TELEGRAM] To {channel_id}: {text[:50]}...")
-        return 12345  # Mock message ID
+        return 12345
 
     async def send_photo(
         self,
@@ -38,14 +32,13 @@ class TelegramPublisher:
         caption: Optional[str] = None,
         reply_to_message_id: Optional[int] = None
     ) -> Optional[int]:
-        """Send photo to channel"""
         print(f"[TELEGRAM] Photo to {channel_id}")
-        return 12345  # Mock message ID
+        return 12345
 
-_publisher: Optional[TelegramPublisher] = None
+_tg_publisher = None
 
-def get_telegram_publisher() -> TelegramPublisher:
-    global _publisher
-    if _publisher is None:
-        _publisher = TelegramPublisher()
-    return _publisher
+def get_telegram_publisher():
+    global _tg_publisher
+    if _tg_publisher is None:
+        _tg_publisher = TelegramPublisher()
+    return _tg_publisher

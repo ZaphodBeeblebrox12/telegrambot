@@ -83,12 +83,6 @@ class Trade:
     def total_position_size(self) -> float:
         return sum(e.remaining_size for e in self.entries)
 
-    def add_entry(self, entry: TradeEntry):
-        self.entries.append(entry)
-
-    def add_fifo_close(self, record: FIFOCloseRecord):
-        self.fifo_closes.append(record)
-
 @dataclass
 class OCRResult:
     symbol: str

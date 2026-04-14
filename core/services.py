@@ -1,7 +1,6 @@
-"""Config-driven Trade Service - Single source for all calculations (FIX 3)"""
+"""Config-driven Trade Service - Business logic layer"""
 from typing import Optional, Dict, Any, List
 from datetime import datetime
-from decimal import Decimal
 
 from config.config_loader import config
 from core.models import Trade, TradeEntry, EntryType, TradeStatus, OCRResult
@@ -11,7 +10,7 @@ from core.id_generator import get_id_generator
 from ocr.gemini_ocr import get_ocr_service
 
 class TradeService:
-    """Trade business logic - SINGLE SOURCE OF TRUTH for all calculations (FIX 3)"""
+    """Trade business logic - SINGLE SOURCE OF TRUTH for all calculations"""
 
     def __init__(self):
         self.cfg = config.trade_ledger
@@ -20,10 +19,10 @@ class TradeService:
         self.ocr_service = get_ocr_service()
         self.id_gen = get_id_generator()
 
-    # ===== CALCULATION METHODS (FIX 3: Centralized) =====
+    # ============ CALCULATION METHODS (SINGLE SOURCE OF TRUTH) ============
 
     def calculate_weighted_avg(self, trade: Trade) -> float:
-        """Calculate weighted average entry - SINGLE SOURCE OF TRUTH"""
+        """Calculate weighted average entry price"""
         if not trade.entries:
             return trade.entry_price
 
@@ -34,7 +33,7 @@ class TradeService:
         weighted_sum = sum(e.entry_price * e.remaining_size for e in trade.entries)
         return weighted_sum / total_remaining
 
-    def calculate_total_position_size(self, trade: Trade) -> float:
+    def calculate_total_remaining(self, trade: Trade) -> float:
         """Calculate total remaining position size"""
         return sum(e.remaining_size for e in trade.entries)
 
@@ -47,23 +46,52 @@ class TradeService:
         else:
             return (weighted_avg - exit_price) * size
 
-    def calculate_locked_profit(self, trade: Trade) -> float:
+    def calculate_percentage_change(self, entry: float, exit: float) -> float:
+        """Calculate percentage change safely"""
+        if entry == 0:
+            return 0.0
+        return ((exit - entry) / entry) * 100
+
+    def calculate_position_return(self, entry: float, exit: float, leverage: int) -> float:
+        """Calculate leveraged position return"""
+        pct = self.calculate_percentage_change(entry, exit)
+        return pct * leverage
+
+    def calculate_locked_profit(self, trade: Trade, new_stop: Optional[float] = None) -> float:
         """Calculate locked profit based on current stop"""
-        if not self.cfg.calculate_locked_profit or trade.current_stop is None:
+        if not self.cfg.calculate_locked_profit:
             return 0.0
 
-        weighted_avg = Decimal(str(self.calculate_weighted_avg(trade)))
-        stop_price = Decimal(str(trade.current_stop))
-        position_size = Decimal(str(self.calculate_total_position_size(trade)))
+        stop_price = new_stop if new_stop is not None else trade.current_stop
+        if stop_price is None:
+            return 0.0
+
+        weighted_avg = self.calculate_weighted_avg(trade)
+        remaining_size = self.calculate_total_remaining(trade)
 
         if trade.side == 'LONG':
             locked = stop_price - weighted_avg
         else:
             locked = weighted_avg - stop_price
 
-        return max(0, float(locked * position_size))
+        return max(0.0, locked * remaining_size)
 
-    # ===== TRADE OPERATIONS =====
+    # ============ PRICE PARSING (FIX 2) ============
+
+    def _parse_price(self, price_value) -> float:
+        """Parse price from various formats to float"""
+        if isinstance(price_value, (int, float)):
+            return float(price_value)
+        if isinstance(price_value, str):
+            # Remove commas and convert
+            cleaned = price_value.replace(',', '').replace(' ', '')
+            try:
+                return float(cleaned)
+            except ValueError:
+                return 0.0
+        return 0.0
+
+    # ============ TRADE OPERATIONS ============
 
     def create_trade_from_ocr(self, ocr_result: OCRResult) -> Optional[Trade]:
         """Create new trade from OCR result"""
@@ -83,15 +111,20 @@ class TradeService:
             ocr_result.symbol
         )
 
+        # Parse prices safely (FIX 2)
+        entry_price = self._parse_price(ocr_result.entry)
+        target_price = self._parse_price(ocr_result.target)
+        stop_price = self._parse_price(ocr_result.stop_loss)
+
         trade = Trade(
             trade_id=trade_id,
             symbol=ocr_result.symbol,
             asset_class=ocr_result.asset_class,
             side=ocr_result.side.upper(),
-            entry_price=float(ocr_result.entry.replace(',', '')),
-            target=float(ocr_result.target.replace(',', '')),
-            stop_loss=float(ocr_result.stop_loss.replace(',', '')),
-            current_stop=float(ocr_result.stop_loss.replace(',', '')),
+            entry_price=entry_price,
+            target=target_price,
+            stop_loss=stop_price,
+            current_stop=stop_price,
             leverage_multiplier=leverage,
             status=TradeStatus.OPEN
         )
@@ -99,7 +132,7 @@ class TradeService:
         entry_id = self.id_gen.generate_entry_id(trade_id, 'INITIAL', 1)
         entry = TradeEntry(
             entry_id=entry_id,
-            entry_price=trade.entry_price,
+            entry_price=entry_price,
             size=1.0,
             type=EntryType.INITIAL,
             timestamp=datetime.now().timestamp()
@@ -133,7 +166,6 @@ class TradeService:
 
         if 'current_stop' in kwargs:
             trade.current_stop = kwargs['current_stop']
-            # Use centralized calculation
             trade.locked_profit = self.calculate_locked_profit(trade)
 
         self.repo.save(trade)
@@ -174,14 +206,12 @@ class TradeService:
         exit_price: float,
         close_percentage: float
     ) -> Optional[Dict[str, Any]]:
-        """
-        Execute partial close with FIFO logic.
-        Uses centralized calculation methods (FIX 3).
-        """
+        """Execute partial close with FIFO logic"""
         trade = self.repo.get(trade_id)
         if not trade:
             return None
 
+        # Use FIFO manager for allocation only (FIX 4)
         close_details, booked_pnl, remaining_size, new_weighted_avg =             self.fifo_mgr.calculate_fifo_close(
                 entries=trade.entries,
                 exit_price=exit_price,
@@ -189,7 +219,6 @@ class TradeService:
                 side=trade.side
             )
 
-        # Apply close (accumulates closed_size)
         self.fifo_mgr.apply_close(trade.entries, close_details)
 
         close_record = self.fifo_mgr.create_close_record(
@@ -229,12 +258,11 @@ class TradeService:
     def get_trade_statistics(self) -> Dict[str, Any]:
         all_trades = self.repo.get_all()
         open_trades = [t for t in all_trades if t.status == TradeStatus.OPEN]
-        closed_trades = [t for t in all_trades if t.status == TradeStatus.CLOSED]
 
         return {
             'total_trades': len(all_trades),
             'open_trades': len(open_trades),
-            'closed_trades': len(closed_trades),
+            'closed_trades': len([t for t in all_trades if t.status == TradeStatus.CLOSED]),
             'cancelled_trades': len([t for t in all_trades if t.status == TradeStatus.CANCELLED]),
             'avg_entries_per_trade': sum(len(t.entries) for t in all_trades) / max(len(all_trades), 1),
             'trades_with_fifo_closes': len([t for t in all_trades if t.fifo_closes])

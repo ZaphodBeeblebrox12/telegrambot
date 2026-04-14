@@ -32,7 +32,7 @@ class OutboxMessage:
     error: Optional[str] = None
 
 class TransactionalOutbox:
-    """Transactional outbox that participates in DB transactions (FIX 2)"""
+    """Transactional outbox that participates in DB transactions (FIX 3)"""
 
     def __init__(self, db: Optional[Database] = None):
         self.db = db or Database()
@@ -47,7 +47,7 @@ class TransactionalOutbox:
     ) -> str:
         """
         Enqueue message within an existing transaction.
-        CRITICAL FIX: Uses provided session for transactional consistency.
+        CRITICAL: Uses provided session for transactional consistency.
         """
         msg_id = str(uuid.uuid4())[:8]
 
@@ -141,7 +141,7 @@ class AsyncProcessor:
         return False
 
 class OutboxManager:
-    """Main outbox manager with transactional support (FIX 2)"""
+    """Main outbox manager with transactional support (FIX 3)"""
 
     def __init__(self):
         self.db = Database()
@@ -160,7 +160,7 @@ class OutboxManager:
         payload: Dict[str, Any],
         channel_id: Optional[str] = None
     ) -> str:
-        """Enqueue within existing transaction (FIX 2)"""
+        """Enqueue within existing transaction (FIX 3)"""
         return self.outbox.enqueue_in_transaction(
             session, destination, message_type, payload, channel_id
         )

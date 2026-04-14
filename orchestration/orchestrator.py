@@ -12,8 +12,6 @@ from orchestration.command_router import get_command_router
 from orchestration.config_executor import get_executor
 from orchestration.formatter import get_formatter
 from messaging.message_mapping_service import get_mapping_service
-from publishers.telegram_publisher import get_telegram_publisher
-from publishers.twitter_publisher import get_twitter_publisher
 
 class TradingBotOrchestrator:
     """Main orchestrator with Transactional Outbox"""
@@ -26,8 +24,6 @@ class TradingBotOrchestrator:
         self.formatter = get_formatter()
         self.trade_service = get_trade_service()
         self.mapping_service = get_mapping_service()
-        self.tg_publisher = get_telegram_publisher()
-        self.tw_publisher = get_twitter_publisher()
         self.outbox = get_outbox()
         self.db = RepositoryFactory.get_database()
 
@@ -37,7 +33,7 @@ class TradingBotOrchestrator:
         admin_channel_id: int,
         message_id: int
     ) -> Dict[str, Any]:
-        """Process image through full pipeline with transactional outbox"""
+        """Process image with transactional outbox (FIX 3)"""
         result = {
             'success': False,
             'ocr_result': None,
@@ -66,7 +62,7 @@ class TradingBotOrchestrator:
 
             result['trade'] = trade
 
-            # 3. Format Messages
+            # 3. Format & Queue to outbox IN SAME TRANSACTION (FIX 3)
             msg_type_cfg = config.get_message_type('trade_setup')
             if msg_type_cfg:
                 tg_text = self.formatter.format_message(
@@ -83,9 +79,10 @@ class TradingBotOrchestrator:
                     trade
                 )
 
-                # 4. Queue to outbox WITHIN SAME TRANSACTION (FIX 2)
-                if msg_type_cfg.platform_rules.get('telegram'):
-                    for dest in self.tg_publisher.get_destination_channels():
+                if msg_type_cfg.get('platform_rules', {}).get('telegram'):
+                    from publishers.telegram_publisher import get_telegram_publisher
+                    tg_publisher = get_telegram_publisher()
+                    for dest in tg_publisher.get_destination_channels():
                         outbox_id = self.outbox.enqueue_in_transaction(
                             session=session,
                             destination='telegram',
@@ -96,42 +93,9 @@ class TradingBotOrchestrator:
                                 'photo': image_bytes
                             }
                         )
-                        result['outbox_ids'].append({
-                            'platform': 'telegram',
-                            'id': outbox_id
-                        })
+                        result['outbox_ids'].append({'platform': 'telegram', 'id': outbox_id})
 
-                if msg_type_cfg.platform_rules.get('twitter'):
-                    tw_text = self.formatter.format_message(
-                        'trade_setup', 'twitter',
-                        {
-                            'symbol': trade.symbol,
-                            'asset_class': trade.asset_class,
-                            'side': trade.side,
-                            'entry': trade.entry_price,
-                            'target': trade.target,
-                            'stop_loss': trade.stop_loss,
-                            'leverage_multiplier': trade.leverage_multiplier
-                        },
-                        trade
-                    )
-                    for account in self.tw_publisher.get_destination_accounts():
-                        outbox_id = self.outbox.enqueue_in_transaction(
-                            session=session,
-                            destination='twitter',
-                            message_type='trade_setup',
-                            payload={
-                                'account_key': account['credentials_key'],
-                                'text': tw_text,
-                                'media_bytes': image_bytes
-                            }
-                        )
-                        result['outbox_ids'].append({
-                            'platform': 'twitter',
-                            'id': outbox_id
-                        })
-
-            # 5. Create message mapping
+            # 4. Create message mapping
             mapping = self.mapping_service.create_mapping(
                 main_msg_id=message_id,
                 tg_channel=admin_channel_id,
@@ -144,10 +108,10 @@ class TradingBotOrchestrator:
             result['mapping'] = mapping
             result['success'] = True
 
-            # 6. COMMIT TRANSACTION (atomic: trade + outbox messages)
+            # 5. COMMIT TRANSACTION (atomic: trade + outbox messages)
             session.commit()
 
-            # 7. Process outbox immediately
+            # 6. Process outbox
             await self.outbox.run_once()
 
         except Exception as e:
@@ -164,7 +128,7 @@ class TradingBotOrchestrator:
         reply_to_message_id: Optional[int],
         admin_channel_id: int
     ) -> Dict[str, Any]:
-        """Process command through pipeline"""
+        """Process command with transactional outbox"""
         result = {
             'success': False,
             'parsed': None,
@@ -207,7 +171,7 @@ class TradingBotOrchestrator:
                 session.close()
                 return result
 
-            for platform in ['telegram', 'twitter']:
+            for platform in ['telegram']:
                 formatted = self.formatter.format_message(
                     execution_result.message_type or 'position_update',
                     platform,
@@ -227,10 +191,7 @@ class TradingBotOrchestrator:
                     'reply_to_message_id': reply_to_message_id
                 }
             )
-            result['outbox_ids'].append({
-                'platform': 'telegram',
-                'id': outbox_id
-            })
+            result['outbox_ids'].append({'platform': 'telegram', 'id': outbox_id})
 
             result['success'] = True
             session.commit()
@@ -258,9 +219,9 @@ class TradingBotOrchestrator:
             'mappings_count': len(self.mapping_service.get_all_mappings())
         }
 
-_orchestrator: Optional[TradingBotOrchestrator] = None
+_orchestrator = None
 
-def get_orchestrator() -> TradingBotOrchestrator:
+def get_orchestrator():
     global _orchestrator
     if _orchestrator is None:
         _orchestrator = TradingBotOrchestrator()

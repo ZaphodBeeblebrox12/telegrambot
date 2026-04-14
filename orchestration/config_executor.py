@@ -1,7 +1,6 @@
 """Config-driven Command Executor - Dynamic handler registration"""
 from typing import Dict, Any, Optional, Callable, List
 from dataclasses import dataclass
-from datetime import datetime
 
 from config.config_loader import config
 from core.models import Trade, ParsedCommand, TradeStatus, EntryType
@@ -31,12 +30,12 @@ class ConfigExecutor:
 
     def _register_handlers(self):
         """Register command handlers from config"""
-        if not self.cfg.commands:
+        if not self.cfg.command_processing:
             return
 
-        update_config = self.cfg.commands.get('/update')
-        if update_config and update_config.command_mapping:
-            for cmd, mapping in update_config.command_mapping.items():
+        update_config = self.cfg.command_processing.get('/update')
+        if update_config and update_config.get('command_mapping'):
+            for cmd, mapping in update_config['command_mapping'].items():
                 handler_name = f"_handle_{cmd.lower()}"
                 if hasattr(self, handler_name):
                     self.handlers[cmd] = getattr(self, handler_name)
@@ -69,12 +68,20 @@ class ConfigExecutor:
                 error=str(e)
             )
 
+    def _format_price(self, price: float) -> str:
+        """Format price for display"""
+        if price >= 1000:
+            return f"{price:.2f}"
+        elif price >= 1:
+            return f"{price:.4f}"
+        else:
+            return f"{price:.6f}"
+
     async def _handle_trail(
         self,
         trade: Trade,
         parsed: ParsedCommand
     ) -> ExecutionResult:
-        """Handle TRAIL command"""
         if not parsed.price:
             return ExecutionResult(
                 success=False, trade=trade, message_type=None,
@@ -93,7 +100,7 @@ class ConfigExecutor:
             message_type='trail_update_specific',
             variables={
                 'symbol': trade.symbol,
-                'price': parsed.price,
+                'price': self._format_price(parsed.price),
                 'status': 'OPEN',
                 'leverage_multiplier': trade.leverage_multiplier
             }
@@ -104,25 +111,26 @@ class ConfigExecutor:
         trade: Trade,
         parsed: ParsedCommand
     ) -> ExecutionResult:
-        """Handle CLOSED command"""
         if not parsed.price:
             return ExecutionResult(
                 success=False, trade=trade, message_type=None,
                 variables={}, error="Price required for CLOSED"
             )
 
-        # Execute FIFO close for 100%
+        exit_price = float(parsed.price)
+
+        # Use consolidated calculation (FIX 4)
+        entry_price = self.trade_service.calculate_weighted_avg(trade)
+        price_change_pct = self.trade_service.calculate_percentage_change(entry_price, exit_price)
+        position_return_pct = self.trade_service.calculate_position_return(entry_price, exit_price, trade.leverage_multiplier)
+
         close_result = self.trade_service.execute_partial_close(
-            trade.trade_id, parsed.price, 100.0
+            trade.trade_id, exit_price, 100.0
         )
 
         updated = self.trade_service.update_trade_status(
             trade.trade_id, TradeStatus.CLOSED
         )
-
-        entry_price = trade.weighted_avg_entry
-        price_change = parsed.price - entry_price
-        position_return = (price_change / entry_price * 100) if entry_price else 0
 
         return ExecutionResult(
             success=updated is not None,
@@ -131,10 +139,10 @@ class ConfigExecutor:
             variables={
                 'symbol': trade.symbol,
                 'percentage': '100',
-                'price': parsed.price,
-                'entry': entry_price,
-                'price_change': f"{position_return:+.2f}%",
-                'position_return': f"{position_return * trade.leverage_multiplier:+.2f}%",
+                'price': self._format_price(exit_price),
+                'entry': self._format_price(entry_price),
+                'price_change': f"{price_change_pct:+.2f}%",
+                'position_return': f"{position_return_pct:+.2f}%",
                 'status': 'CLOSED',
                 'leverage_multiplier': trade.leverage_multiplier
             }
@@ -145,17 +153,17 @@ class ConfigExecutor:
         trade: Trade,
         parsed: ParsedCommand
     ) -> ExecutionResult:
-        """Handle PARTIAL command with FIFO"""
         if not parsed.price:
             return ExecutionResult(
                 success=False, trade=trade, message_type=None,
                 variables={}, error="Price required for PARTIAL"
             )
 
-        percentage = parsed.percentage or 25.0
+        exit_price = float(parsed.price)
+        percentage = float(parsed.percentage) if parsed.percentage else 25.0
 
         close_result = self.trade_service.execute_partial_close(
-            trade.trade_id, parsed.price, percentage
+            trade.trade_id, exit_price, percentage
         )
 
         if not close_result:
@@ -164,7 +172,6 @@ class ConfigExecutor:
                 variables={}, error="Failed to execute partial close"
             )
 
-        # Format FIFO tree
         tree_lines = self.fifo_mgr.format_fifo_tree(
             entries=close_result['trade'].entries,
             close_details=close_result['close_details'],
@@ -185,7 +192,7 @@ class ConfigExecutor:
             variables={
                 'symbol': trade.symbol,
                 'percentage': percentage,
-                'price': parsed.price,
+                'price': self._format_price(exit_price),
                 'tree_lines': tree_lines,
                 'booked_pnl': f"{close_result['booked_pnl']:+.2f}",
                 'remaining_size': close_result['remaining_size'],
@@ -201,15 +208,16 @@ class ConfigExecutor:
         trade: Trade,
         parsed: ParsedCommand
     ) -> ExecutionResult:
-        """Handle CLOSEHALF command with FIFO (50%)"""
         if not parsed.price:
             return ExecutionResult(
                 success=False, trade=trade, message_type=None,
                 variables={}, error="Price required for CLOSEHALF"
             )
 
+        exit_price = float(parsed.price)
+
         close_result = self.trade_service.execute_partial_close(
-            trade.trade_id, parsed.price, 50.0
+            trade.trade_id, exit_price, 50.0
         )
 
         if not close_result:
@@ -238,7 +246,7 @@ class ConfigExecutor:
             variables={
                 'symbol': trade.symbol,
                 'percentage': 50,
-                'price': parsed.price,
+                'price': self._format_price(exit_price),
                 'tree_lines': tree_lines,
                 'booked_pnl': f"{close_result['booked_pnl']:+.2f}",
                 'remaining_size': close_result['remaining_size'],
@@ -254,24 +262,25 @@ class ConfigExecutor:
         trade: Trade,
         parsed: ParsedCommand
     ) -> ExecutionResult:
-        """Handle TARGET command"""
         if not parsed.price:
             return ExecutionResult(
                 success=False, trade=trade, message_type=None,
                 variables={}, error="Price required for TARGET"
             )
 
+        exit_price = float(parsed.price)
+
+        entry_price = self.trade_service.calculate_weighted_avg(trade)
+        price_change_pct = self.trade_service.calculate_percentage_change(entry_price, exit_price)
+        position_return_pct = self.trade_service.calculate_position_return(entry_price, exit_price, trade.leverage_multiplier)
+
         close_result = self.trade_service.execute_partial_close(
-            trade.trade_id, parsed.price, 100.0
+            trade.trade_id, exit_price, 100.0
         )
 
         updated = self.trade_service.update_trade_status(
             trade.trade_id, TradeStatus.CLOSED
         )
-
-        entry_price = trade.weighted_avg_entry
-        price_change = parsed.price - entry_price
-        position_return = (price_change / entry_price * 100) if entry_price else 0
 
         return ExecutionResult(
             success=updated is not None,
@@ -280,10 +289,10 @@ class ConfigExecutor:
             variables={
                 'symbol': trade.symbol,
                 'percentage': '100',
-                'price': parsed.price,
-                'entry': entry_price,
-                'price_change': f"{position_return:+.2f}%",
-                'position_return': f"{position_return * trade.leverage_multiplier:+.2f}%",
+                'price': self._format_price(exit_price),
+                'entry': self._format_price(entry_price),
+                'price_change': f"{price_change_pct:+.2f}%",
+                'position_return': f"{position_return_pct:+.2f}%",
                 'status': 'TARGET MET',
                 'leverage_multiplier': trade.leverage_multiplier
             }
@@ -294,24 +303,25 @@ class ConfigExecutor:
         trade: Trade,
         parsed: ParsedCommand
     ) -> ExecutionResult:
-        """Handle STOPPED command"""
         if not parsed.price:
             return ExecutionResult(
                 success=False, trade=trade, message_type=None,
                 variables={}, error="Price required for STOPPED"
             )
 
+        exit_price = float(parsed.price)
+
+        entry_price = self.trade_service.calculate_weighted_avg(trade)
+        price_change_pct = self.trade_service.calculate_percentage_change(entry_price, exit_price)
+        position_return_pct = self.trade_service.calculate_position_return(entry_price, exit_price, trade.leverage_multiplier)
+
         close_result = self.trade_service.execute_partial_close(
-            trade.trade_id, parsed.price, 100.0
+            trade.trade_id, exit_price, 100.0
         )
 
         updated = self.trade_service.update_trade_status(
             trade.trade_id, TradeStatus.CLOSED
         )
-
-        entry_price = trade.weighted_avg_entry
-        price_change = parsed.price - entry_price
-        position_return = (price_change / entry_price * 100) if entry_price else 0
 
         return ExecutionResult(
             success=updated is not None,
@@ -320,10 +330,10 @@ class ConfigExecutor:
             variables={
                 'symbol': trade.symbol,
                 'percentage': '100',
-                'price': parsed.price,
-                'entry': entry_price,
-                'price_change': f"{position_return:+.2f}%",
-                'position_return': f"{position_return * trade.leverage_multiplier:+.2f}%",
+                'price': self._format_price(exit_price),
+                'entry': self._format_price(entry_price),
+                'price_change': f"{price_change_pct:+.2f}%",
+                'position_return': f"{position_return_pct:+.2f}%",
                 'status': 'STOPPED',
                 'leverage_multiplier': trade.leverage_multiplier
             }
@@ -334,9 +344,10 @@ class ConfigExecutor:
         trade: Trade,
         parsed: ParsedCommand
     ) -> ExecutionResult:
-        """Handle BREAKEVEN command"""
+        entry_price = self.trade_service.calculate_weighted_avg(trade)
+
         close_result = self.trade_service.execute_partial_close(
-            trade.trade_id, trade.weighted_avg_entry, 100.0
+            trade.trade_id, entry_price, 100.0
         )
 
         updated = self.trade_service.update_trade_status(
@@ -350,8 +361,8 @@ class ConfigExecutor:
             variables={
                 'symbol': trade.symbol,
                 'percentage': '100',
-                'price': trade.weighted_avg_entry,
-                'entry': trade.weighted_avg_entry,
+                'price': self._format_price(entry_price),
+                'entry': self._format_price(entry_price),
                 'price_change': '0.00%',
                 'position_return': '0.00%',
                 'status': 'BREAKEVEN',
@@ -364,7 +375,6 @@ class ConfigExecutor:
         trade: Trade,
         parsed: ParsedCommand
     ) -> ExecutionResult:
-        """Handle UPDATE_STOP command"""
         if not parsed.price:
             return ExecutionResult(
                 success=False, trade=trade, message_type=None,
@@ -383,7 +393,7 @@ class ConfigExecutor:
             message_type='stop_update_specific',
             variables={
                 'symbol': trade.symbol,
-                'price': parsed.price,
+                'price': self._format_price(parsed.price),
                 'status': 'OPEN',
                 'leverage_multiplier': trade.leverage_multiplier
             }
@@ -394,7 +404,6 @@ class ConfigExecutor:
         trade: Trade,
         parsed: ParsedCommand
     ) -> ExecutionResult:
-        """Handle UPDATE_TARGET command"""
         if not parsed.price:
             return ExecutionResult(
                 success=False, trade=trade, message_type=None,
@@ -411,7 +420,7 @@ class ConfigExecutor:
             message_type='target_update_specific',
             variables={
                 'symbol': trade.symbol,
-                'price': parsed.price,
+                'price': self._format_price(parsed.price),
                 'status': 'OPEN',
                 'leverage_multiplier': trade.leverage_multiplier
             }
@@ -422,7 +431,6 @@ class ConfigExecutor:
         trade: Trade,
         parsed: ParsedCommand
     ) -> ExecutionResult:
-        """Handle NOTE command"""
         note_text = parsed.note_text or "No note provided"
 
         return ExecutionResult(
@@ -442,7 +450,6 @@ class ConfigExecutor:
         trade: Trade,
         parsed: ParsedCommand
     ) -> ExecutionResult:
-        """Handle CANCELLED command"""
         reason = parsed.reason or "Price never reached entry zone or no longer valid"
 
         updated = self.trade_service.update_trade_status(
@@ -466,7 +473,6 @@ class ConfigExecutor:
         trade: Trade,
         parsed: ParsedCommand
     ) -> ExecutionResult:
-        """Handle NOT_TRIGGERED command"""
         reason = parsed.reason or "Price never reached entry zone or no longer valid"
 
         updated = self.trade_service.update_trade_status(
@@ -490,14 +496,13 @@ class ConfigExecutor:
         trade: Trade,
         parsed: ParsedCommand
     ) -> ExecutionResult:
-        """Handle PYRAMID command"""
         if not parsed.price:
             return ExecutionResult(
                 success=False, trade=trade, message_type=None,
                 variables={}, error="Price required for PYRAMID"
             )
 
-        size_percentage = parsed.size_percentage or 50.0
+        size_percentage = float(parsed.size_percentage) if parsed.size_percentage else 50.0
         size = size_percentage / 100.0
 
         updated = self.trade_service.add_pyramid_entry(
@@ -510,6 +515,10 @@ class ConfigExecutor:
                 variables={}, error="Failed to add pyramid entry"
             )
 
+        # Use consolidated calculation
+        weighted_avg = self.trade_service.calculate_weighted_avg(updated)
+        total_size = self.trade_service.calculate_total_remaining(updated)
+
         return ExecutionResult(
             success=True,
             trade=updated,
@@ -517,8 +526,8 @@ class ConfigExecutor:
             variables={
                 'symbol': trade.symbol,
                 'entries_count': len(updated.entries),
-                'weighted_avg_entry': updated.weighted_avg_entry,
-                'total_size': sum(e.size for e in updated.entries),
+                'weighted_avg_entry': weighted_avg,
+                'total_size': total_size,
                 'current_stop': updated.current_stop or 0,
                 'status': 'OPEN',
                 'leverage_multiplier': updated.leverage_multiplier
@@ -529,10 +538,9 @@ class ConfigExecutor:
         """List registered handlers"""
         return list(self.handlers.keys())
 
-# Singleton
-_executor: Optional[ConfigExecutor] = None
+_executor = None
 
-def get_executor() -> ConfigExecutor:
+def get_executor():
     global _executor
     if _executor is None:
         _executor = ConfigExecutor()

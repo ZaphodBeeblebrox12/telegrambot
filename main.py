@@ -1,8 +1,4 @@
-"""
-Trading Bot - Main Entry Point
-Production-ready Option A architecture with SQL-based storage
-"""
-import asyncio
+"""Trading Bot - Main Entry Point"""
 import os
 import sys
 from pathlib import Path
@@ -24,7 +20,7 @@ def setup_database():
     return db
 
 def verify_sql_repositories():
-    """Verify SQL repositories are active (CRITICAL FIX 1)"""
+    """Verify SQL repositories are active"""
     trade_repo = RepositoryFactory.get_trade_repository()
     mapping_repo = RepositoryFactory.get_mapping_repository()
 
@@ -33,10 +29,9 @@ def verify_sql_repositories():
     assert isinstance(trade_repo, SQLTradeRepository), "Trade repo must be SQL-based"
     assert isinstance(mapping_repo, SQLMessageMappingRepository), "Mapping repo must be SQL-based"
 
-    print("✅ SQL repositories verified (CRITICAL FIX 1)")
+    print("✅ SQL repositories verified")
 
 def main():
-    """Main entry point"""
     print("=" * 60)
     print("Trading Bot - Production Ready (Option A)")
     print("=" * 60)
@@ -51,7 +46,6 @@ def main():
     print(f"   Config Version: {status['config_version']}")
     print(f"   Handlers: {', '.join(status['handlers_registered'])}")
     print(f"   Open Trades: {status['trade_stats']['open_trades']}")
-    print(f"   Pending Outbox: {status['outbox_pending']}")
 
     print("\n" + "=" * 60)
     print("System ready.")

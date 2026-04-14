@@ -20,6 +20,10 @@ class FIFOCloseManager:
         self.cfg = config.fifo_settings
         self.tree_prefixes = self.cfg.get("tree_prefixes", {"branch": "├─", "end": "└─"})
 
+    def _get_remaining(self, entry: TradeEntry) -> float:
+        """Calculate remaining from closed_size - SINGLE SOURCE OF TRUTH"""
+        return entry.size - entry.closed_size
+
     def calculate_fifo_close(
         self,
         entries: List[TradeEntry],
@@ -28,15 +32,15 @@ class FIFOCloseManager:
         side: str
     ) -> Tuple[List[FIFOCloseDetail], float, float, float]:
         """
-        Calculate FIFO close using entry.closed_size as source of truth.
-        CRITICAL FIX: remaining_size is (size - closed_size), never modified directly.
+        Calculate FIFO close using ONLY closed_size as source of truth.
+        remaining = size - closed_size (calculated fresh each time)
         """
         if not entries:
             return [], 0.0, 0.0, 0.0
 
-        # Calculate remaining from closed_size (source of truth)
-        remaining_entries = [(e, e.size - e.closed_size) for e in entries]
-        total_remaining = sum(rem for _, rem in remaining_entries)
+        # Calculate total remaining from closed_size ONLY
+        entries_with_remaining = [(e, self._get_remaining(e)) for e in entries]
+        total_remaining = sum(rem for _, rem in entries_with_remaining)
 
         if total_remaining <= 0:
             return [], 0.0, 0.0, 0.0
@@ -47,8 +51,8 @@ class FIFOCloseManager:
         close_details: List[FIFOCloseDetail] = []
         total_pnl = 0.0
 
-        # Process entries in FIFO order using ACTUAL remaining
-        for entry, actual_remaining in remaining_entries:
+        # Process entries in FIFO order
+        for entry, actual_remaining in entries_with_remaining:
             if remaining_to_close <= 0:
                 break
             if actual_remaining <= 0:
@@ -73,17 +77,18 @@ class FIFOCloseManager:
 
         new_remaining_size = total_remaining - close_amount
 
-        # Calculate new weighted average based on what will remain AFTER this close
+        # Calculate new weighted average based on what REMAINS after this close
         if new_remaining_size > 0:
             weighted_sum = 0.0
-            for entry, actual_remaining in remaining_entries:
-                # Calculate how much will remain after this close
+            for entry, actual_remaining in entries_with_remaining:
+                # Subtract what we're closing from this entry
                 remaining_after = actual_remaining
                 for detail in close_details:
                     if detail.entry_id == entry.entry_id:
                         remaining_after -= detail.closed_size
                         break
-                weighted_sum += entry.entry_price * remaining_after
+                if remaining_after > 0:
+                    weighted_sum += entry.entry_price * remaining_after
             new_weighted_avg = weighted_sum / new_remaining_size
         else:
             new_weighted_avg = 0.0
@@ -91,10 +96,7 @@ class FIFOCloseManager:
         return close_details, total_pnl, new_remaining_size, new_weighted_avg
 
     def apply_close(self, entries: List[TradeEntry], close_details: List[FIFOCloseDetail]) -> None:
-        """
-        Apply close to entries by ACCUMULATING closed_size.
-        CRITICAL FIX: Never subtract from remaining_size, only add to closed_size.
-        """
+        """Apply close by ACCUMULATING closed_size (never subtracting)"""
         for detail in close_details:
             for entry in entries:
                 if entry.entry_id == detail.entry_id:
@@ -124,7 +126,8 @@ class FIFOCloseManager:
             is_last = (i == len(entries) - 1)
             prefix = self.tree_prefixes.get("end", "└─") if is_last else self.tree_prefixes.get("branch", "├─")
 
-            actual_remaining = entry.size - entry.closed_size
+            # Calculate remaining from closed_size for display
+            remaining = self._get_remaining(entry)
 
             if entry.entry_id in closed_entry_ids:
                 detail = next(d for d in close_details if d.entry_id == entry.entry_id)

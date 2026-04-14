@@ -1,280 +1,86 @@
 {
   "system_config": {
     "version": "2.0.0",
-    "admin_channel": -1002495720174,
-    "bot_name": "TradeCrossPostBot",
-    "immutable": true,
-    "description": "Production-ready Option A architecture with SQL-based storage"
+    "admin_channel": -1002495720174
   },
   "destinations": {
     "T1": {
       "platform": "telegram",
-      "channel_id": -1002458855204,
-      "display_name": "Telegram Channel 1",
-      "platform_id": "telegram"
+      "channel_id": -1002458855204
     },
     "T2": {
       "platform": "telegram",
-      "channel_id": -1001648497395,
-      "display_name": "Telegram Channel 2",
-      "platform_id": "telegram"
+      "channel_id": -1001648497395
     },
     "TW1": {
       "platform": "twitter",
-      "account_id": "twitter_t1",
-      "display_name": "Twitter Account 1",
-      "platform_id": "twitter",
-      "credentials_key": "twitter_t1"
-    },
-    "TW2": {
-      "platform": "twitter",
-      "account_id": "twitter_t2",
-      "display_name": "Twitter Account 2",
-      "platform_id": "twitter",
-      "credentials_key": "twitter_t2"
+      "account_id": "twitter_t1"
     }
   },
   "message_types": {
-    "original_image": {
-      "description": "Original image posted in admin channel",
-      "platform_rules": {
-        "telegram": false,
-        "twitter": false
-      },
-      "processing": [
-        "gemini_ocr",
-        "edit_admin_caption"
-      ],
-      "triggers": [
-        "trade_setup"
-      ],
-      "is_admin_channel": true
-    },
     "trade_setup": {
-      "description": "Trade setup from OCR analysis",
       "platform_rules": {
         "telegram": true,
         "twitter": true
       },
-      "generated_by": [
-        "original_image"
-      ],
       "formatting": {
-        "telegram": "\ud83d\udcc9 {symbol} ({asset_class})\n\ud83d\udd0e Direction: {side}\n\u26a1\ufe0f Entry: {entry}\n\ud83c\udfaf Target: {target}\n\ud83d\uded1 Stop: {stop_loss}",
-        "twitter": "\ud83d\udcc9 {symbol} ({asset_class})\nDirection: {side}\nEntry: {entry}\nTarget: {target}\nStop: {stop_loss}"
-      },
-      "requires_media": true,
-      "create_trade_ledger": true,
-      "is_nest_root": true
-    },
-    "position_update": {
-      "description": "Position update (trail, close, etc.)",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "generated_by": [
-        "/update"
-      ],
-      "is_command_result": true,
-      "is_reply": true,
-      "requires_parent": true,
-      "nest_under_parent": true,
-      "processing": [
-        "skip_ocr_for_proof"
-      ]
+        "telegram": "\ud83d\udcc9 {symbol} ({asset_class})\\n\ud83d\udd0e Direction: {side}\\n\u26a1\ufe0f Entry: {entry}\\n\ud83c\udfaf Target: {target}\\n\ud83d\uded1 Stop: {stop_loss}"
+      }
     }
   },
   "command_processing": {
     "/update": {
-      "description": "Update existing trade",
-      "action": "process_and_reply",
-      "requires_reply": true,
-      "delete_command": true,
-      "delete_delay_ms": 500,
-      "output_message_type": "position_update",
-      "format_output": true,
-      "allow_media": true,
-      "skip_ocr_for_proof": true,
-      "create_trade_ledger_update": true,
       "command_mapping": {
-        "TRAIL": {
-          "type": "trail_update_specific",
-          "requires_price": true,
-          "fields": [
-            "price"
-          ],
-          "update_type": "TRAIL"
-        },
         "CLOSED": {
           "type": "trade_close_specific",
-          "requires_price": true,
-          "fields": [
-            "price"
-          ],
-          "percentage": "100",
           "update_type": "CLOSED"
-        },
-        "TARGET": {
-          "type": "target_hit_specific",
-          "requires_price": true,
-          "fields": [
-            "price"
-          ],
-          "percentage": "100",
-          "status": "TARGET MET",
-          "update_type": "TARGET"
-        },
-        "STOPPED": {
-          "type": "stopped_out_specific",
-          "requires_price": true,
-          "fields": [
-            "price"
-          ],
-          "percentage": "100",
-          "status": "STOPPED",
-          "update_type": "STOPPED"
-        },
-        "BREAKEVEN": {
-          "type": "breakeven_specific",
-          "requires_price": false,
-          "percentage": "100",
-          "status": "BREAKEVEN",
-          "update_type": "BREAKEVEN"
         },
         "PARTIAL": {
           "type": "partial_close_specific",
-          "requires_price": true,
-          "fields": [
-            "price"
-          ],
-          "percentage": "25",
-          "remaining": "75",
           "update_type": "PARTIAL"
         },
         "CLOSEHALF": {
           "type": "close_half_specific",
-          "requires_price": true,
-          "fields": [
-            "price"
-          ],
-          "percentage": "50",
-          "remaining": "50",
           "update_type": "CLOSEHALF"
         },
-        "UPDATE_STOP": {
-          "type": "stop_update_specific",
-          "requires_price": true,
-          "fields": [
-            "price"
-          ],
-          "update_type": "UPDATE_STOP"
+        "TARGET": {
+          "type": "target_hit_specific",
+          "update_type": "TARGET"
         },
-        "UPDATE_TARGET": {
-          "type": "target_update_specific",
-          "requires_price": true,
-          "fields": [
-            "price"
-          ],
-          "update_type": "UPDATE_TARGET"
+        "STOPPED": {
+          "type": "stopped_out_specific",
+          "update_type": "STOPPED"
         },
-        "NOTE": {
-          "type": "note_update_specific",
-          "requires_price": false,
-          "requires_note_text": true,
-          "update_type": "NOTE"
+        "TRAIL": {
+          "type": "trail_update_specific",
+          "update_type": "TRAIL"
         },
-        "CANCELLED": {
-          "type": "trade_cancelled_specific",
-          "requires_price": false,
-          "update_type": "CANCELLED",
-          "status": "CANCELLED"
-        },
-        "NOT_TRIGGERED": {
-          "type": "trade_cancelled_specific",
-          "requires_price": false,
-          "update_type": "NOT_TRIGGERED",
-          "status": "NOT TRIGGERED"
-        },
-        "PYRAMID": {
-          "type": "pyramid_update_specific",
-          "requires_price": true,
-          "fields": [
-            "price"
-          ],
-          "update_type": "PYRAMID"
+        "BREAKEVEN": {
+          "type": "breakeven_specific",
+          "update_type": "BREAKEVEN"
         }
       }
     }
   },
   "ocr_processing": {
-    "provider": "google_gemini",
     "model": "gemini-2.5-flash",
     "timeout": 30,
-    "daily_limit": 50,
-    "confidence_threshold": 0.8,
-    "prompt": "Analyze this TradingView chart image...",
+    "prompt": "Analyze this TradingView chart",
     "key_management": {
-      "rotation_enabled": true,
-      "cooldown_hours": 24,
-      "auto_rotate": true,
-      "mark_rate_limited": true
+      "max_retries": 3
     },
     "output_mapping": {
       "symbol": "symbol",
       "asset_class": "asset_class",
-      "setup_found": "setup_found",
       "side": "side",
       "entry": "entry",
       "target": "target",
       "stop_loss": "stop_loss"
-    },
-    "asset_class_mapping": {
-      "FOREX": {
-        "keywords": [
-          "USD",
-          "EUR",
-          "GBP"
-        ],
-        "leverage_multiplier": 50
-      },
-      "METAL": {
-        "keywords": [
-          "GOLD",
-          "SILVER",
-          "XAU"
-        ],
-        "leverage_multiplier": 100
-      },
-      "CRYPTO": {
-        "keywords": [
-          "BTC",
-          "ETH",
-          "XRP"
-        ],
-        "leverage_multiplier": 20
-      },
-      "INDEX": {
-        "keywords": [
-          "NASDAQ",
-          "S&P",
-          "NIFTY"
-        ],
-        "leverage_multiplier": 1
-      },
-      "OPTION": {
-        "keywords": [
-          "CALL",
-          "PUT"
-        ],
-        "leverage_multiplier": 1
-      }
     }
   },
   "trade_ledger": {
     "enabled": true,
     "auto_create": true,
-    "track_updates": true,
     "calculate_locked_profit": true,
     "cleanup_days": 90
   },
@@ -284,8 +90,6 @@
     "max_line_length": 35,
     "show_booked_pnl": true,
     "show_remaining_position": true,
-    "show_weighted_average": true,
-    "closed_indicator_format": "[{percentage}%]",
     "tree_prefixes": {
       "branch": "\u251c\u2500",
       "end": "\u2514\u2500"
@@ -297,15 +101,24 @@
       "FOREX": 50,
       "CRYPTO": 20,
       "METAL": 50,
-      "ENERGY": 20,
       "INDEX": 1,
-      "STOCK": 1,
-      "OPTION": 1
+      "STOCK": 1
     }
   },
-  "file_paths": {
-    "rate_limit_file": "rate_limit_state.json",
-    "usage_stats_file": "usage_stats.json",
-    "bot_state_file": "bot_state.json"
+  "pyramid_settings": {
+    "max_pyramids_per_trade": 5
+  },
+  "price_formatting": {
+    "formats_by_asset": {
+      "FOREX": {
+        "decimal_places": 5
+      },
+      "CRYPTO": {
+        "decimal_places": 2
+      },
+      "INDEX": {
+        "decimal_places": 2
+      }
+    }
   }
 }
