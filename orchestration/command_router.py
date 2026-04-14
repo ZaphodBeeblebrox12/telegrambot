@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from config.config_loader import config
 from core.models import ParsedCommand
 
-
 class CommandRouter:
     """Routes commands based on config-defined patterns"""
 
@@ -115,7 +114,6 @@ class CommandRouter:
         if cmd_config:
             return cmd_config.requires_reply
         return False
-
 
 # Singleton
 _router: Optional[CommandRouter] = None

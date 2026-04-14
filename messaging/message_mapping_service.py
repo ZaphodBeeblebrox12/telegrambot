@@ -1,4 +1,4 @@
-"""Config-driven Message Mapping Service - Thread and hierarchy management"""
+"""Config-driven Message Mapping Service - SQL-based (FIX 6)"""
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 
@@ -6,9 +6,8 @@ from config.config_loader import config
 from core.models import MessageMapping
 from core.repositories import RepositoryFactory
 
-
 class MessageMappingService:
-    """Manages message mappings for thread tracking - Config-driven"""
+    """Manages message mappings for thread tracking - SQL-based (FIX 6)"""
 
     def __init__(self):
         self.cfg = config.reply_nesting
@@ -29,7 +28,7 @@ class MessageMappingService:
         parent_main_msg_id: Optional[int] = None,
         parent_tg_msg_id: Optional[int] = None
     ) -> MessageMapping:
-        """Create new message mapping"""
+        """Create new message mapping with SQL persistence (FIX 6)"""
         mapping = MessageMapping(
             main_msg_id=main_msg_id,
             tg_channel=tg_channel,
@@ -48,21 +47,21 @@ class MessageMappingService:
         return mapping
 
     def get_mapping(self, main_msg_id: int) -> Optional[MessageMapping]:
-        """Get mapping by main message ID"""
+        """Get mapping by main message ID from SQL"""
         return self.repo.get(main_msg_id)
 
     def get_mapping_by_trade(self, trade_id: str) -> Optional[MessageMapping]:
-        """Get mapping by trade ID"""
+        """Get mapping by trade ID from SQL"""
         return self.repo.get_by_trade_id(trade_id)
 
     def get_thread_parent(self, mapping: MessageMapping) -> Optional[MessageMapping]:
-        """Get parent mapping in thread"""
+        """Get parent mapping in thread from SQL"""
         if mapping.parent_main_msg_id:
             return self.repo.get(mapping.parent_main_msg_id)
         return None
 
     def get_thread_children(self, main_msg_id: int) -> List[MessageMapping]:
-        """Get all child mappings in thread"""
+        """Get all child mappings in thread from SQL"""
         return self.repo.get_children(main_msg_id)
 
     def update_mapping(
@@ -70,7 +69,7 @@ class MessageMappingService:
         main_msg_id: int,
         **updates
     ) -> Optional[MessageMapping]:
-        """Update existing mapping"""
+        """Update existing mapping in SQL"""
         mapping = self.repo.get(main_msg_id)
         if not mapping:
             return None
@@ -83,7 +82,7 @@ class MessageMappingService:
         return mapping
 
     def add_tg_message(self, main_msg_id: int, tg_msg_id: int) -> bool:
-        """Add Telegram message ID to mapping"""
+        """Add Telegram message ID to mapping in SQL"""
         mapping = self.repo.get(main_msg_id)
         if not mapping:
             return False
@@ -100,7 +99,7 @@ class MessageMappingService:
         tweet_id: str,
         account: str
     ) -> bool:
-        """Set Twitter ID for mapping"""
+        """Set Twitter ID for mapping in SQL"""
         mapping = self.repo.get(main_msg_id)
         if not mapping:
             return False
@@ -118,7 +117,7 @@ class MessageMappingService:
         reply_to_msg_id: Optional[int] = None,
         trade_id: Optional[str] = None
     ) -> Optional[MessageMapping]:
-        """Resolve parent mapping for reply - Config-driven hierarchy"""
+        """Resolve parent mapping for reply from SQL (FIX 6)"""
         # If replying to specific message
         if reply_to_msg_id:
             parent = self.repo.get(reply_to_msg_id)
@@ -178,7 +177,7 @@ class MessageMappingService:
         return {}
 
     def build_thread_chain(self, main_msg_id: int) -> List[MessageMapping]:
-        """Build complete thread chain from root to message"""
+        """Build complete thread chain from root to message from SQL"""
         chain = []
         current = self.repo.get(main_msg_id)
 
@@ -192,13 +191,12 @@ class MessageMappingService:
         return chain
 
     def delete_mapping(self, main_msg_id: int) -> bool:
-        """Delete mapping by ID"""
+        """Delete mapping by ID from SQL"""
         return self.repo.delete(main_msg_id)
 
     def get_all_mappings(self) -> List[MessageMapping]:
-        """Get all mappings"""
+        """Get all mappings from SQL"""
         return self.repo.get_all()
-
 
 # Singleton
 _mapping_service: Optional[MessageMappingService] = None

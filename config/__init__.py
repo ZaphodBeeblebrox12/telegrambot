@@ -1,4 +1,4 @@
-"""Config module - Single Source of Truth"""
-from config.config_loader import config, ConfigLoader
+"""Config module - Configuration management"""
+from config.config_loader import config, Config
 
-__all__ = ['config', 'ConfigLoader']
+__all__ = ['config', 'Config']

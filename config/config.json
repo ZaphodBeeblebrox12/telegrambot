@@ -4,9 +4,8 @@
     "admin_channel": -1002495720174,
     "bot_name": "TradeCrossPostBot",
     "immutable": true,
-    "description": "Updated with hex-color-based OCR prompt for both zone and line chart types"
+    "description": "Production-ready Option A architecture with SQL-based storage"
   },
-
   "destinations": {
     "T1": {
       "platform": "telegram",
@@ -35,7 +34,6 @@
       "credentials_key": "twitter_t2"
     }
   },
-
   "message_types": {
     "original_image": {
       "description": "Original image posted in admin channel",
@@ -43,361 +41,53 @@
         "telegram": false,
         "twitter": false
       },
-      "processing": ["gemini_ocr", "edit_admin_caption"],
-      "triggers": ["trade_setup"],
+      "processing": [
+        "gemini_ocr",
+        "edit_admin_caption"
+      ],
+      "triggers": [
+        "trade_setup"
+      ],
       "is_admin_channel": true
     },
-    
     "trade_setup": {
       "description": "Trade setup from OCR analysis",
       "platform_rules": {
         "telegram": true,
         "twitter": true
       },
-      "generated_by": ["original_image"],
+      "generated_by": [
+        "original_image"
+      ],
       "formatting": {
-        "telegram": "📉 {symbol} ({asset_class})\n🔎 Direction: {side}\n⚡️ Entry: {entry}\n🎯 Target: {target}\n🛑 Stop: {stop_loss}",
-        "twitter": "📉 {symbol} ({asset_class})\nDirection: {side}\nEntry: {entry}\nTarget: {target}\nStop: {stop_loss}"
+        "telegram": "\ud83d\udcc9 {symbol} ({asset_class})\n\ud83d\udd0e Direction: {side}\n\u26a1\ufe0f Entry: {entry}\n\ud83c\udfaf Target: {target}\n\ud83d\uded1 Stop: {stop_loss}",
+        "twitter": "\ud83d\udcc9 {symbol} ({asset_class})\nDirection: {side}\nEntry: {entry}\nTarget: {target}\nStop: {stop_loss}"
       },
       "requires_media": true,
       "create_trade_ledger": true,
       "is_nest_root": true
     },
-    
     "position_update": {
-      "description": "Position update (trail, close, etc.) - EXACT MATCH TO YOUR CODE STRUCTURE",
+      "description": "Position update (trail, close, etc.)",
       "platform_rules": {
         "telegram": true,
         "twitter": true
       },
-      "generated_by": ["/update"],
+      "generated_by": [
+        "/update"
+      ],
       "is_command_result": true,
       "is_reply": true,
       "requires_parent": true,
       "nest_under_parent": true,
-      "processing": ["skip_ocr_for_proof"]
-    },
-    
-    "trail_update_specific": {
-      "description": "Trailing stop update - specific format",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "🔁 TRAILING STOP | {symbol}\n• New Stop: {price}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
-        "twitter": "🔁 TRAILING STOP | {symbol}\n• New Stop: {price}\n• Status: {status}"
-      },
-      "is_nested_reply": true
-    },
-    
-    "trade_close_specific": {
-      "description": "Trade closed - specific format (single entry)",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "✅ TRADE CLOSED ({percentage}) | {symbol}\n• Exit Price: {price}\n• Entry: {entry} → Exit: {price}\n• Price Change: {price_change}\n• Position Return: {position_return}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
-        "twitter": "✅ TRADE CLOSED ({percentage}) | {symbol}\n• Exit Price: {price}\n• Entry: {entry} → Exit: {price}\n• Price Change: {price_change}\n• Position Return: {position_return}\n• Status: {status}"
-      },
-      "is_nested_reply": true,
-      "price_format": "clean"
-    },
-    
-    "trade_close_pyramid_specific": {
-      "description": "Trade closed - pyramided format (multiple entries)",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "✅ TRADE CLOSED ({percentage}) | {symbol} ({entries_count} entries)\n{entry_tree}\n\n• Entry: {weighted_avg_entry} → Exit: {price}\n• Price Change: {price_change}\n• Position Return: {position_return}\n• Status: {status}\n• Pip Count: {pip_count}",
-        "twitter": "✅ {symbol} CLOSED ({entries_count} entries)\n• Avg Entry: {weighted_avg_entry} → Exit: {price}\n• Return: {price_change}"
-      },
-      "is_nested_reply": true
-    },
-    
-    "target_hit_specific": {
-      "description": "Target hit update - single entry",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "🎯 TARGET HIT ({percentage}) | {symbol}\n• Entry: {entry} → Exit: {price}\n• Price Change: {price_change}\n• Position Return: {position_return}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
-        "twitter": "🎯 TARGET HIT ({percentage}) | {symbol}\n• Entry: {entry} → Exit: {price}\n• Price Change: {price_change}\n• Position Return: {position_return}\n• Status: {status}"
-      },
-      "is_nested_reply": true
-    },
-    
-    "target_hit_pyramid_specific": {
-      "description": "Target hit update - pyramided format",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "🎯 TARGET HIT ({percentage}) | {symbol} ({entries_count} entries)\n{entry_tree}\n\n• Entry: {weighted_avg_entry} → Exit: {price}\n• Price Change: {price_change}\n• Position Return: {position_return}\n• Status: {status}\n• Pip Count: {pip_count}",
-        "twitter": "🎯 {symbol} TARGET ({entries_count} entries)\n• Avg Entry: {weighted_avg_entry} → Exit: {price}\n• Return: {price_change}"
-      },
-      "is_nested_reply": true
-    },
-    
-    "stopped_out_specific": {
-      "description": "Stopped out update - single entry",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "🛑 STOPPED OUT ({percentage}) | {symbol}\n• Entry: {entry} → Exit: {price}\n• Price Change: {price_change}\n• Position Return: {position_return}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
-        "twitter": "🛑 STOPPED OUT ({percentage}) | {symbol}\n• Entry: {entry} → Exit: {price}\n• Price Change: {price_change}\n• Position Return: {position_return}\n• Status: {status}"
-      },
-      "is_nested_reply": true
-    },
-    
-    "stopped_out_pyramid_specific": {
-      "description": "Stopped out update - pyramided format",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "🛑 STOPPED OUT ({percentage}) | {symbol} ({entries_count} entries)\n{entry_tree}\n\n• Entry: {weighted_avg_entry} → Exit: {price}\n• Price Change: {price_change}\n• Position Return: {position_return}\n• Status: {status}\n• Pip Count: {pip_count}",
-        "twitter": "🛑 {symbol} STOPPED ({entries_count} entries)\n• Avg Entry: {weighted_avg_entry} → Exit: {price}\n• Return: {price_change}"
-      },
-      "is_nested_reply": true
-    },
-    
-    "breakeven_specific": {
-      "description": "Breakeven update - single entry",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "⚖️ BREAKEVEN ({percentage}) | {symbol}\n• Exit Price: {price}\n• Entry: {entry} → Exit: {price}\n• Price Change: {price_change}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
-        "twitter": "⚖️ BREAKEVEN ({percentage}) | {symbol}\n• Exit Price: {price}\n• Entry: {entry} → Exit: {price}\n• Price Change: {price_change}\n• Status: {status}"
-      },
-      "is_nested_reply": true,
-      "price_format": "clean"
-    },
-    
-    "breakeven_pyramid_specific": {
-      "description": "Breakeven update - pyramided format",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "⚖️ BREAKEVEN ({percentage}) | {symbol} ({entries_count} entries)\n{entry_tree}\n\n• Entry: {weighted_avg_entry} → Exit: {price}\n• Price Change: {price_change}\n• Position Return: {position_return}\n• Status: {status}\n• Pip Count: {pip_count}",
-        "twitter": "⚖️ {symbol} BREAKEVEN ({entries_count} entries)\n• Avg Entry: {weighted_avg_entry} → Exit: {price}\n• Return: {price_change}"
-      },
-      "is_nested_reply": true
-    },
-    
-    "partial_close_specific": {
-      "description": "Partial close (25%) with FIFO tree visualization",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "{header}\n{tree_lines}\n\n• Booked: {booked_pnl}\n• Remaining: {remaining_size}x at {weighted_avg}\n• Stop: {current_stop}\n• Status: {status}\n• Leverage: {leverage}:1",
-        "twitter": "{header}\n{tree_lines}\nBooked: {booked_pnl}"
-      },
-      "fifo_format": {
-        "enabled": true,
-        "use_tree": true,
-        "max_line_length": 35
-      },
-      "is_nested_reply": true
-    },
-
-    "close_half_specific": {
-      "description": "Close half (50%) with FIFO tree visualization",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "{header}\n{tree_lines}\n\n• Booked: {booked_pnl}\n• Remaining: {remaining_size}x at {weighted_avg}\n• Stop: {current_stop}\n• Status: {status}\n• Leverage: {leverage}:1",
-        "twitter": "{header}\n{tree_lines}\nBooked: {booked_pnl}"
-      },
-      "fifo_format": {
-        "enabled": true,
-        "use_tree": true,
-        "max_line_length": 35
-      },
-      "is_nested_reply": true
-    },
-
-    "partial_close_pyramid_specific": {
-      "description": "Partial close with pyramiding - FIFO tree format",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "{header} ({entry_count} entries)\n{tree_lines}\n\n• Booked: {booked_pnl}\n• Remaining: {remaining_size}x at {weighted_avg}\n• Stop: {current_stop}\n• Status: {status}\n• Pip Count: {pip_count}",
-        "twitter": "{header}\n{tree_lines}\nBooked: {booked_pnl}"
-      },
-      "fifo_format": {
-        "enabled": true,
-        "use_tree": true,
-        "show_entry_types": true
-      },
-      "is_nested_reply": true
-    },
-
-    "close_half_pyramid_specific": {
-      "description": "Close half with pyramiding - FIFO tree format",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "{header} ({entry_count} entries)\n{tree_lines}\n\n• Booked: {booked_pnl}\n• Remaining: {remaining_size}x at {weighted_avg}\n• Stop: {current_stop}\n• Status: {status}\n• Pip Count: {pip_count}",
-        "twitter": "{header}\n{tree_lines}\nBooked: {booked_pnl}"
-      },
-      "fifo_format": {
-        "enabled": true,
-        "use_tree": true,
-        "show_entry_types": true
-      },
-      "is_nested_reply": true
-    },
-    
-    "stop_update_specific": {
-      "description": "Stop update (non-trailing)",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "🛑 STOP UPDATE | {symbol}\n• New Stop: {price}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
-        "twitter": "🛑 STOP UPDATE | {symbol}\n• New Stop: {price}\n• Status: {status}"
-      },
-      "is_nested_reply": true
-    },
-    
-    "target_update_specific": {
-      "description": "Target update",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "🎯 TARGET UPDATE | {symbol}\n• New Target: {price}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
-        "twitter": "🎯 TARGET UPDATE | {symbol}\n• New Target: {price}\n• Status: {status}"
-      },
-      "is_nested_reply": true
-    },
-    
-    "note_update_specific": {
-      "description": "Note update (watching, observation, etc.)",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "📝 NOTE | {symbol}\n• {note_text}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
-        "twitter": "📝 NOTE | {symbol}\n• {note_text}\n• Status: {status}"
-      },
-      "is_nested_reply": true
-    },
-    
-    "trade_cancelled_specific": {
-      "description": "Trade cancelled or not triggered",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "⚠️ TRADE CANCELLED | {symbol}\n• Status: {status}\n• Reason: {reason}\n• Leverage: {leverage_multiplier}:1",
-        "twitter": "⚠️ TRADE CANCELLED | {symbol}\n• Status: {status}\n• Reason: {reason}"
-      },
-      "is_nested_reply": true
-    },
-
-    "pyramid_update_specific": {
-      "description": "Pyramid add to existing position - ADMIN VIEW with full stop levels",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": false
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "🔺 PYRAMID ADD | {symbol} ({entries_count} entries)\n{entry_tree}\n\n• New Average Entry: {weighted_avg_entry}\n• Total Position: {total_size}% of original\n• Stop Levels:\n  ├── Current: {current_stop}\n  └── Break-even: {breakeven_stop}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
-        "twitter": "🔺 {symbol} PYRAMID: {pyramid_entry} (+{pyramid_size}%)\n• Avg Entry: {weighted_avg_entry}\n• Total Size: {total_size}% of original\n• Stop: {current_stop}\n• BE: {breakeven_stop}"
-      },
-      "is_nested_reply": true,
-      "view_type": "admin"
-    },
-
-    "pyramid_update_subscriber": {
-      "description": "Pyramid add - SIMPLIFIED VIEW for subscribers (no stop levels detail)",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "🔺 PYRAMID ADD | {symbol} ({entries_count} entries)\n{entry_tree}\n\n• New Average Entry: {weighted_avg_entry}\n• Total Position: {total_size}% of original\n• Current Stop: {current_stop}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
-        "twitter": "🔺 {symbol} PYRAMID: {pyramid_entry} (+{pyramid_size}%)\n• Avg Entry: {weighted_avg_entry}\n• Total Size: {total_size}% of original\n• Stop: {current_stop}"
-      },
-      "is_nested_reply": true,
-      "view_type": "subscriber"
-    },
-
-    "fifo_close_specific": {
-      "description": "FIFO partial close with tree visualization",
-      "platform_rules": {
-        "telegram": true,
-        "twitter": true
-      },
-      "parent_type": "trade_setup",
-      "formatting": {
-        "telegram": "{icon} CLOSE ({percentage}%) | {symbol}\n{tree_lines}\n\n• Booked: {booked_pnl}\n• Remaining: {remaining_size}x at {weighted_avg}\n• Stop: {current_stop}\n• Status: {status}\n• Leverage: {leverage}:1",
-        "twitter": "{icon} {symbol} CLOSE ({percentage}%)\n{tree_lines}\nBooked: {booked_pnl}"
-      },
-      "variables": {
-        "icon": "½ for CLOSEHALF, 🔹 for PARTIAL",
-        "percentage": "close percentage",
-        "symbol": "trade symbol",
-        "tree_lines": "FIFO tree visualization",
-        "booked_pnl": "realized P/L from closed portion",
-        "remaining_size": "remaining position size",
-        "weighted_avg": "new weighted average entry",
-        "current_stop": "current stop loss",
-        "status": "OPEN/CLOSED",
-        "leverage": "leverage multiplier"
-      },
-      "is_nested_reply": true
+      "processing": [
+        "skip_ocr_for_proof"
+      ]
     }
   },
-
   "command_processing": {
     "/update": {
-      "description": "Update existing trade - EXACT MATCH TO YOUR CODE STRUCTURE",
+      "description": "Update existing trade",
       "action": "process_and_reply",
       "requires_reply": true,
       "delete_command": true,
@@ -407,39 +97,42 @@
       "allow_media": true,
       "skip_ocr_for_proof": true,
       "create_trade_ledger_update": true,
-      
       "command_mapping": {
         "TRAIL": {
           "type": "trail_update_specific",
           "requires_price": true,
-          "fields": ["price"],
-          "format": "🔁 TRAILING STOP | {symbol}\n• New Stop: {price}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
+          "fields": [
+            "price"
+          ],
           "update_type": "TRAIL"
         },
         "CLOSED": {
           "type": "trade_close_specific",
           "requires_price": true,
-          "fields": ["price"],
+          "fields": [
+            "price"
+          ],
           "percentage": "100",
-          "format": "✅ TRADE CLOSED ({percentage}) | {symbol}\n• Exit Price: {price}\n• Entry: {entry} → Exit: {price}\n• Price Change: {price_change}\n• Position Return: {position_return}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
           "update_type": "CLOSED"
         },
         "TARGET": {
           "type": "target_hit_specific",
           "requires_price": true,
-          "fields": ["price"],
+          "fields": [
+            "price"
+          ],
           "percentage": "100",
           "status": "TARGET MET",
-          "format": "🎯 TARGET HIT ({percentage}) | {symbol}\n• Entry: {entry} → Exit: {price}\n• Price Change: {price_change}\n• Position Return: {position_return}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
           "update_type": "TARGET"
         },
         "STOPPED": {
           "type": "stopped_out_specific",
           "requires_price": true,
-          "fields": ["price"],
+          "fields": [
+            "price"
+          ],
           "percentage": "100",
           "status": "STOPPED",
-          "format": "🛑 STOPPED OUT ({percentage}) | {symbol}\n• Entry: {entry} → Exit: {price}\n• Price Change: {price_change}\n• Position Return: {position_return}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
           "update_type": "STOPPED"
         },
         "BREAKEVEN": {
@@ -447,315 +140,86 @@
           "requires_price": false,
           "percentage": "100",
           "status": "BREAKEVEN",
-          "format": "⚖️ BREAKEVEN ({percentage}) | {symbol}\n• Exit Price: {price}\n• Entry: {entry} → Exit: {price}\n• Price Change: {price_change}\n• Position Return: {position_return}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
           "update_type": "BREAKEVEN"
         },
         "PARTIAL": {
           "type": "partial_close_specific",
           "requires_price": true,
-          "fields": ["price"],
+          "fields": [
+            "price"
+          ],
           "percentage": "25",
           "remaining": "75",
-          "format": "🔹 PARTIAL CLOSE ({percentage}) | {symbol}\n• Entry: {entry} → Exit: {price}\n• Price Change: {price_change}\n• Position: {remaining}% remaining\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
           "update_type": "PARTIAL"
         },
         "CLOSEHALF": {
           "type": "close_half_specific",
           "requires_price": true,
-          "fields": ["price"],
+          "fields": [
+            "price"
+          ],
           "percentage": "50",
           "remaining": "50",
-          "format": "½ CLOSE HALF ({percentage}) | {symbol}\n• Entry: {entry} → Exit: {price}\n• Price Change: {price_change}\n• Position: {remaining}% remaining\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
           "update_type": "CLOSEHALF"
         },
         "UPDATE_STOP": {
           "type": "stop_update_specific",
           "requires_price": true,
-          "fields": ["price"],
-          "format": "🛑 STOP UPDATE | {symbol}\n• New Stop: {price}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
+          "fields": [
+            "price"
+          ],
           "update_type": "UPDATE_STOP"
         },
         "UPDATE_TARGET": {
           "type": "target_update_specific",
           "requires_price": true,
-          "fields": ["price"],
-          "format": "🎯 TARGET UPDATE | {symbol}\n• New Target: {price}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
+          "fields": [
+            "price"
+          ],
           "update_type": "UPDATE_TARGET"
-        },
-        "NEWTARGET": {
-          "type": "target_update_specific",
-          "requires_price": true,
-          "fields": ["price"],
-          "format": "🎯 TARGET UPDATE | {symbol}\n• New Target: {price}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
-          "update_type": "NEWTARGET"
         },
         "NOTE": {
           "type": "note_update_specific",
           "requires_price": false,
           "requires_note_text": true,
-          "format": "📝 NOTE | {symbol}\n• {note_text}\n• Status: {status}\n• Leverage: {leverage_multiplier}:1",
           "update_type": "NOTE"
         },
         "CANCELLED": {
           "type": "trade_cancelled_specific",
           "requires_price": false,
-          "requires_note_text": false,
-          "default_note_text": "Price never reached entry zone or no longer valid",
-          "format": "⚠️ TRADE CANCELLED | {symbol}\n• Status: {status}\n• Reason: {reason}\n• Leverage: {leverage_multiplier}:1",
           "update_type": "CANCELLED",
           "status": "CANCELLED"
         },
         "NOT_TRIGGERED": {
           "type": "trade_cancelled_specific",
           "requires_price": false,
-          "requires_note_text": false,
-          "default_note_text": "Price never reached entry zone or no longer valid",
-          "format": "⚠️ TRADE CANCELLED | {symbol}\n• Status: {status}\n• Reason: {reason}\n• Leverage: {leverage_multiplier}:1",
           "update_type": "NOT_TRIGGERED",
           "status": "NOT TRIGGERED"
         },
         "PYRAMID": {
           "type": "pyramid_update_specific",
           "requires_price": true,
-          "fields": ["price"],
-          "update_type": "PYRAMID",
-          "subscriber_type": "pyramid_update_subscriber"
-        }
-      },
-      
-      "parse_patterns": [
-        {
-          "pattern": "newtarget\\s+(\\d+\\.?\\d*)",
-          "command": "NEWTARGET",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "updatetarget\\s+(\\d+\\.?\\d*)",
-          "command": "UPDATE_TARGET",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "trail\\s+(\\d+\\.?\\d*)",
-          "command": "TRAIL",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "trailing\\s+(\\d+\\.?\\d*)",
-          "command": "TRAIL",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "trailingstop\\s+(\\d+\\.?\\d*)",
-          "command": "TRAIL",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "closed\\s+(\\d+\\.?\\d*)",
-          "command": "CLOSED",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "close\\s+(\\d+\\.?\\d*)",
-          "command": "CLOSED",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "closetrade\\s+(\\d+\\.?\\d*)",
-          "command": "CLOSED",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "target\\s+(\\d+\\.?\\d*)",
-          "command": "TARGET",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "targethit\\s+(\\d+\\.?\\d*)",
-          "command": "TARGET",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "targetmet",
-          "command": "TARGET"
-        },
-        {
-          "pattern": "stopped\\s+(\\d+\\.?\\d*)",
-          "command": "STOPPED",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "stoploss\\s+(\\d+\\.?\\d*)",
-          "command": "STOPPED",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "breakeven",
-          "command": "BREAKEVEN"
-        },
-        {
-          "pattern": "be",
-          "command": "BREAKEVEN"
-        },
-        {
-          "pattern": "partial\\s+(\\d+\\.?\\d*)\\s+(\\d+\\.?\\d*)",
-          "command": "PARTIAL",
-          "extract": ["price", "percentage"],
-          "has_percentage": true
-        },
-        {
-          "pattern": "partial\\s+(\\d+\\.?\\d*)",
-          "command": "PARTIAL",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "partialclose\\s+(\\d+\\.?\\d*)\\s+(\\d+\\.?\\d*)",
-          "command": "PARTIAL",
-          "extract": ["price", "percentage"],
-          "has_percentage": true
-        },
-        {
-          "pattern": "partialclose\\s+(\\d+\\.?\\d*)",
-          "command": "PARTIAL",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "closehalf\\s+(\\d+\\.?\\d*)",
-          "command": "CLOSEHALF",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "half\\s+(\\d+\\.?\\d*)",
-          "command": "CLOSEHALF",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "close_half\\s+(\\d+\\.?\\d*)",
-          "command": "CLOSEHALF",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "stop\\s+(\\d+\\.?\\d*)",
-          "command": "UPDATE_STOP",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "newstop\\s+(\\d+\\.?\\d*)",
-          "command": "UPDATE_STOP",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "updatestop\\s+(\\d+\\.?\\d*)",
-          "command": "UPDATE_STOP",
-          "extract": ["price"]
-        },
-        {
-          "pattern": "note\\s+(.+)",
-          "command": "NOTE",
-          "extract": ["note_text"]
-        },
-        {
-          "pattern": "cancel",
-          "command": "CANCELLED"
-        },
-        {
-          "pattern": "cancelled",
-          "command": "CANCELLED"
-        },
-        {
-          "pattern": "nottriggered",
-          "command": "NOT_TRIGGERED"
-        },
-        {
-          "pattern": "not\\s+triggered",
-          "command": "NOT_TRIGGERED"
-        },
-        {
-          "pattern": "cancel\\s+(.+)",
-          "command": "CANCELLED",
-          "extract": ["reason"]
-        },
-        {
-          "pattern": "cancelled\\s+(.+)",
-          "command": "CANCELLED",
-          "extract": ["reason"]
-        },
-        {
-          "pattern": "nottriggered\\s+(.+)",
-          "command": "NOT_TRIGGERED",
-          "extract": ["reason"]
-        },
-        {
-          "pattern": "not\\s+triggered\\s+(.+)",
-          "command": "NOT_TRIGGERED",
-          "extract": ["reason"]
-        },
-        {
-          "pattern": "pyramid\\s+(\\d+\\.?\\d*)\\s+(\\d+\\.?\\d*)",
-          "command": "PYRAMID",
-          "extract": ["price", "size_percentage"],
-          "has_percentage": true
-        },
-        {
-          "pattern": "pyramid\\s+(\\d+\\.?\\d*)",
-          "command": "PYRAMID",
-          "extract": ["price"]
-        }
-      ],
-      
-      "nested_reply_config": {
-        "admin_channel": {
-          "edit_original": true,
-          "post_confirmation": true,
-          "save_mapping": true
-        },
-        "target_channel": {
-          "reply_to_original": true,
-          "include_proof_image": true,
-          "preserve_thread": true
-        },
-        "twitter": {
-          "reply_to_parent_tweet": true,
-          "thread_replies": true
+          "fields": [
+            "price"
+          ],
+          "update_type": "PYRAMID"
         }
       }
-    },
-    
-    "/s": {
-      "description": "Route to alternate destinations",
-      "action": "route_prefix_only",
-      "requires_reply": false,
-      "delete_command": false,
-      "output_message_type": null,
-      "is_trigger": true
-    },
-    
-    "/textonly": {
-      "description": "Force text-only mode",
-      "action": "process_and_reply",
-      "requires_reply": false,
-      "delete_command": true,
-      "output_message_type": "text_only",
-      "format_output": true,
-      "allow_media": false
     }
   },
-
   "ocr_processing": {
     "provider": "google_gemini",
     "model": "gemini-2.5-flash",
     "timeout": 30,
     "daily_limit": 50,
     "confidence_threshold": 0.8,
-    
-    "prompt": "Analyze this TradingView chart image. Extract the trade setup by identifying THREE colored price labels on the vertical price scale (Y-axis).\n\n## STEP 1: FIND THE THREE COLORED PRICE LABELS\nScan the price scale and identify labels by their background hex colors:\n\n1. **GREEN LABEL** (hex ~#089981 or #22AB94 - teal-green)\n   - This is the TARGET price\n   - Usually the lowest price for SHORT, highest for LONG\n\n2. **DARK GREY LABEL** (hex ~#5D606B or #787B86 - dark grey/brown)\n   - This is the ENTRY price\n   - Located between green and red zones/lines\n   - Darkest/most muted color of the three\n   - NO timer next to it\n\n3. **RED LABEL** (hex ~#F23645 or #FF5252 - bright red)\n   - This is the STOP LOSS price\n   - Usually the highest price for SHORT, lowest for LONG\n\n## STEP 2: IGNORE THESE COLORS (CRITICAL)\nDO NOT extract prices with these colors:\n- **CYAN/TEAL** (hex ~#00BCD4 or #26C6DA) - has a countdown timer like \"00:33\" or \"00:53\"\n- **BLUE** (hex ~#2196F3) - labeled \"Bid\" or \"Ask\"\n- Any bright colors on the RIGHT side panel with timers\n\n## STEP 3: DETERMINE DIRECTION\nCompare vertical positions:\n- If GREEN is BELOW GREY = SHORT trade (green=target, red=stop)\n- If GREEN is ABOVE GREY = LONG trade (green=target, red=stop)\n\n## STEP 4: PRICE FORMAT AND MAGNITUDE VALIDATION\n**First, classify the asset** (FOREX, CRYPTO, METAL, ENERGY, INDEX, STOCK, or OPTION).\n\n### IF ASSET IS **OPTION** (contains \"CALL\" or \"PUT\" in symbol):\n- **Skip all magnitude validation.**\n- Read prices exactly as they appear on the chart, removing only commas.\n- Example: If the chart shows \"42.15\" for a NIFTY CALL option, output \"42.15\". Do NOT multiply or shift decimals.\n\n### IF ASSET IS **NOT AN OPTION**:\n- **Comma Handling**: The chart may use commas as thousands separators (e.g., `71,829`). Convert this to a plain number: `71829`. Do NOT treat a comma as a decimal point.\n- **Self‑Validation**: After extracting the entry price, use your own knowledge of typical price ranges for this asset. Count the number of digits before the decimal point in your extracted price.\n  - Bitcoin (BTC): 5 digits (70,000–100,000)\n  - Ethereum (ETH): 4 digits (3,000–4,000)\n  - Forex (EURUSD): 1 digit (1.0x)\n  - Gold (XAUUSD): 4 digits (2,400–2,500)\n  - S&P 500: 4–5 digits (5,000–6,000)\n- If your extracted entry price has **2 or more fewer digits** than the typical range (e.g., you extracted `71.829` for Bitcoin), you have mistakenly placed a decimal point. Multiply the price by `1000` (or the appropriate power of 10) to correct it.\n- Apply the **same correction factor** to the target and stop loss prices.\n\n## STEP 5: ASSET CLASSIFICATION\nClassify the asset as: FOREX, CRYPTO, METAL, ENERGY, INDEX, STOCK, or OPTION.\n\n**IMPORTANT RULE FOR OPTIONS:**\n- If the symbol contains the words \"CALL\" or \"PUT\" (e.g., \"NIFTY 13 APR 23850 CALL\"), you MUST classify it as **OPTION**, even if the underlying is an index.\n- Do NOT classify index options as INDEX. Use OPTION.\n\nReturn JSON:\n{\n  \"symbol\": \"NIFTY 13 APR 23850 CALL\",\n  \"asset_class\": \"OPTION\",\n  \"setup_found\": true,\n  \"side\": \"LONG\",\n  \"entry\": \"42.15\",\n  \"target\": \"65.10\",\n  \"stop_loss\": \"32.40\"\n}",
-
+    "prompt": "Analyze this TradingView chart image...",
     "key_management": {
       "rotation_enabled": true,
       "cooldown_hours": 24,
       "auto_rotate": true,
       "mark_rate_limited": true
     },
-    
     "output_mapping": {
       "symbol": "symbol",
       "asset_class": "asset_class",
@@ -763,272 +227,57 @@
       "side": "side",
       "entry": "entry",
       "target": "target",
-      "stop_loss": "stop_loss",
-      "is_stock_chart": "is_stock_chart"
+      "stop_loss": "stop_loss"
     },
-    
     "asset_class_mapping": {
       "FOREX": {
-        "keywords": ["USD", "EUR", "GBP", "JPY", "CHF", "AUD", "CAD", "NZD", "SGD", "HKD", "DOLLAR", "POUND", "YEN", "FRANC", "DINAR", "RIYAL"],
-        "ticker_format": "6-letter pairs (e.g., USDCAD, EURUSD)",
-        "leverage_multiplier": 50,
-        "conversion_examples": {
-          "U.S. Dollar / Canadian Dollar": "USDCAD",
-          "Euro / U.S. Dollar": "EURUSD",
-          "British Pound / U.S. Dollar": "GBPUSD",
-          "U.S. Dollar / Japanese Yen": "USDJPY"
-        }
+        "keywords": [
+          "USD",
+          "EUR",
+          "GBP"
+        ],
+        "leverage_multiplier": 50
       },
       "METAL": {
-        "keywords": ["GOLD", "SILVER", "XAU", "XAG", "PLATINUM", "PALLADIUM", "PRECIOUS METAL"],
-        "ticker_format": "X-codes (e.g., XAUUSD, XAGUSD)",
-        "leverage_multiplier": 100,
-        "conversion_examples": {
-          "Gold": "XAUUSD",
-          "Silver": "XAGUSD",
-          "Platinum": "XPTUSD",
-          "Palladium": "XPDUSD"
-        }
-      },
-      "ENERGY": {
-        "keywords": ["OIL", "CRUDE", "BRENT", "WTI", "NATURAL GAS", "NATGAS", "ENERGY", "PETROLEUM", "GAS"],
-        "ticker_format": "Standard energy symbols",
-        "leverage_multiplier": 20,
-        "conversion_examples": {
-          "Crude Oil": "USOIL",
-          "Brent Crude Oil": "UKOIL",
-          "Natural Gas": "NATGAS",
-          "WTI Crude": "USOIL"
-        },
-        "tick_size": 0.01,
-        "tick_size_exceptions": {
-          "NATGAS": 0.001,
-          "NATURALGAS": 0.001,
-          "XNGUSD": 0.001
-        }
+        "keywords": [
+          "GOLD",
+          "SILVER",
+          "XAU"
+        ],
+        "leverage_multiplier": 100
       },
       "CRYPTO": {
-        "keywords": ["BTC", "ETH", "XRP", "SOL", "ADA", "DOGE", "BNB", "MATIC", "DOT", "AVAX", "BITCOIN", "ETHEREUM", "CRYPTO", "ALTCOIN", "CRYPTOCURRENCY"],
-        "ticker_format": "Standard crypto symbols",
+        "keywords": [
+          "BTC",
+          "ETH",
+          "XRP"
+        ],
         "leverage_multiplier": 20
       },
       "INDEX": {
-        "keywords": ["NASDAQ", "S&P", "DOW", "NIFTY", "SENSEX", "DAX", "FTSE", "HANG SENG", "NIKKEI", "INDEX", "COMPOSITE", "AVERAGE"],
-        "ticker_format": "Standard index symbols",
-        "leverage_multiplier": 1,
-        "conversion_examples": {
-          "NASDAQ 100": "NAS100",
-          "S&P 500": "SPX500",
-          "Dow Jones": "DOW30",
-          "NIFTY 50": "NIFTY50"
-        },
-        "note": "Indian indices (NIFTY50, SENSEX) are UNLEVERAGED. Western indices (SPX500, US30) are LEVERAGED CFDs."
-      },
-      "STOCK": {
-        "keywords": ["INC", "CORP", "LIMITED", "LTD", "PLC", "AG", "SA", "COMPANY", "CORPORATION", "HOLDINGS"],
-        "ticker_format": "Stock tickers",
+        "keywords": [
+          "NASDAQ",
+          "S&P",
+          "NIFTY"
+        ],
         "leverage_multiplier": 1
       },
       "OPTION": {
-        "keywords": ["CALL", "PUT", "CE", "PE", "OPT", "STRADDLE", "STRANGLE"],
-        "ticker_format": "Full Option Symbol (e.g., NIFTY 30 DEC 25900 CALL)",
-        "leverage_multiplier": 1,
-        "note": "Options are always classified as OPTION, even if the underlying is an index or stock."
-      },
-      "UNKNOWN": {
+        "keywords": [
+          "CALL",
+          "PUT"
+        ],
         "leverage_multiplier": 1
       }
-    },
-    
-    "symbol_conversion_rules": {
-      "forex": {
-        "pattern": "([A-Za-z\\s\\.]+)\\s*\\/\\s*([A-Za-z\\s\\.]+)",
-        "example_input": "U.S. Dollar / Canadian Dollar",
-        "example_output": "USDCAD",
-        "processing": "Remove spaces, dots, 'U.S.', convert to 3-letter codes"
-      },
-      "metals": {
-        "direct_mapping": {
-          "GOLD": "XAUUSD",
-          "SILVER": "XAGUSD",
-          "PLATINUM": "XPTUSD",
-          "PALLADIUM": "XPDUSD"
-        }
-      },
-      "energy": {
-        "direct_mapping": {
-          "CRUDE OIL": "USOIL",
-          "BRENT CRUDE": "UKOIL",
-          "NATURAL GAS": "NATGAS",
-          "WTI": "USOIL"
-        }
-      }
-    },
-    
-    "validation_rules": {
-      "symbol_required": true,
-      "asset_class_required": true,
-      "side_required": true,
-      "entry_required": true,
-      "target_required": true,
-      "stop_loss_required": true,
-      "numeric_price_fields": ["entry", "target", "stop_loss"],
-      "price_formatting": {
-        "decimal_places": {
-          "FOREX": 5,
-          "METAL": 5,
-          "ENERGY": 2,
-          "CRYPTO": 5,
-          "INDEX": 2,
-          "STOCK": 2,
-          "OPTION": 2,
-          "UNKNOWN": 2
-        }
-      },
-      "asset_class_values": ["FOREX", "FX", "CRYPTO", "CRYPTOCURRENCY", "INDEX", "INDICES", "METAL", "METALS", "ENERGY", "STOCK", "STOCKS", "OPTION", "OPTIONS", "UNKNOWN"]
     }
   },
-
-  "reply_nesting": {
-    "enabled": true,
-    "structure": "admin_channel_root",
-    "hierarchy_levels": 3,
-    
-    "rules": {
-      "trade_setup": {
-        "post_to": ["telegram_target", "twitter"],
-        "create_thread": true,
-        "is_root": true
-      },
-      "position_update": {
-        "post_to": ["admin_channel", "telegram_target", "twitter"],
-        "reply_to_parent": true,
-        "nest_in_thread": true,
-        "preserve_hierarchy": true,
-        "level": 1
-      }
-    },
-    
-    "admin_channel_behavior": {
-      "edit_original": true,
-      "post_confirmation": true,
-      "save_mapping": true,
-      "track_trade_id": true,
-      "edit_delay_ms": 100
-    },
-    
-    "target_channel_behavior": {
-      "reply_to_original": true,
-      "include_proof_image": true,
-      "preserve_thread": true,
-      "maintain_thread_hierarchy": true
-    },
-    
-    "twitter_behavior": {
-      "reply_to_parent_tweet": true,
-      "thread_replies": true,
-      "max_thread_depth": 20
-    },
-    
-    "mapping_structure": {
-      "save_all_messages": true,
-      "link_parent_child": true,
-      "track_trade_chain": true,
-      "max_chain_length": 1000
-    }
-  },
-
   "trade_ledger": {
     "enabled": true,
     "auto_create": true,
     "track_updates": true,
     "calculate_locked_profit": true,
-    "cleanup_days": 90,
-    
-    "fields": {
-      "trade_id": "auto_generated",
-      "symbol": "from_ocr",
-      "asset_class": "from_ocr",
-      "side": "from_ocr",
-      "entry_price": "from_ocr",
-      "current_stop": "from_ocr_or_updates",
-      "position_size": 1.0,
-      "status": "OPEN/CLOSED/CANCELLED/NOT_TRIGGERED",
-      "locked_profit": 0.0,
-      "created_at": "timestamp",
-      "updates": "array_of_updates",
-      "leverage_multiplier": "calculated_based_on_asset_class",
-      "entries": "array_of_trade_entries",
-      "fifo_closes": "array_of_fifo_close_records"
-    },
-    
-    "entry_structure": {
-      "entry_id": "string",
-      "entry_price": "float",
-      "size": "float",
-      "type": "INITIAL/PYRAMID",
-      "timestamp": "float",
-      "closed_size": "float"
-    },
-    
-    "fifo_close_structure": {
-      "timestamp": "float",
-      "close_percentage": "float",
-      "exit_price": "float",
-      "close_details": "array",
-      "booked_pnl": "float",
-      "remaining_size": "float",
-      "new_weighted_avg": "float"
-    },
-    
-    "update_types": {
-      "TRAIL": "Trailing stop",
-      "UPDATE_STOP": "Stop update",
-      "UPDATE_TARGET": "Target update",
-      "UPDATE_ENTRY": "Entry update",
-      "PARTIAL": "Partial close (FIFO-based)",
-      "CLOSEHALF": "Close half (50%, FIFO-based)",
-      "CLOSED": "Trade closed",
-      "TARGET": "Target hit",
-      "STOPPED": "Stopped out",
-      "BREAKEVEN": "Breakeven",
-      "NEWTARGET": "Target update (not closing)",
-      "NOTE": "Note/observation",
-      "CANCELLED": "Trade cancelled",
-      "NOT_TRIGGERED": "Trade not triggered",
-      "PYRAMID": "Pyramid add to position"
-    },
-    
-    "locked_profit_calculation": {
-      "enabled": true,
-      "for_update_types": ["TRAIL", "UPDATE_STOP"],
-      "formula_long": "new_stop - entry_price",
-      "formula_short": "entry_price - new_stop"
-    },
-    
-    "fifo_calculation": {
-      "enabled": true,
-      "method": "FIFO",
-      "close_oldest_first": true,
-      "recalculate_weighted_average": true,
-      "track_booked_pnl": true
-    }
+    "cleanup_days": 90
   },
-
-  "pyramid_settings": {
-    "default_size_percentage": 50,
-    "max_pyramids_per_trade": 5,
-    "min_price_move_percentage": 0.5,
-    "stop_adjustment": "ORIGINAL",
-    "partial_close_method": "FIFO",
-    "scaling_method": "DECREASING",
-    "show_breakeven_stop": true,
-    "dual_view_enabled": true,
-    "admin_view": "full",
-    "subscriber_view": "simplified",
-    "track_closed_size": true
-  },
-
   "fifo_settings": {
     "enabled": true,
     "tree_visualization": true,
@@ -1038,457 +287,25 @@
     "show_weighted_average": true,
     "closed_indicator_format": "[{percentage}%]",
     "tree_prefixes": {
-      "branch": "├─",
-      "end": "└─"
+      "branch": "\u251c\u2500",
+      "end": "\u2514\u2500"
     }
   },
-
-  "price_formatting": {
-    "description": "Price display formatting by asset class",
-    "enabled": true,
-    "trim_trailing_zeros": true,
-    "max_decimal_places": 5,
-    
-    "formats_by_asset": {
-      "FOREX": {
-        "decimal_places": 5,
-        "trim_zeros": true,
-        "format": "{price:.5f}"
-      },
-      "METAL": {
-        "decimal_places": 2,
-        "trim_zeros": true,
-        "format": "{price:.2f}"
-      },
-      "CRYPTO": {
-        "decimal_places": 2,
-        "trim_zeros": true,
-        "format": "{price:.2f}"
-      },
-      "INDEX": {
-        "decimal_places": 2,
-        "trim_zeros": true,
-        "format": "{price:.2f}"
-      },
-      "STOCK": {
-        "decimal_places": 2,
-        "trim_zeros": true,
-        "format": "{price:.2f}"
-      },
-      "OPTION": {
-        "decimal_places": 2,
-        "trim_zeros": true,
-        "format": "{price:.2f}"
-      },
-      "ENERGY": {
-        "decimal_places": 2,
-        "trim_zeros": true,
-        "format": "{price:.2f}"
-      }
-    }
-  },
-
-  "index_behavior": {
-    "description": "Defines which indices trade as leveraged CFDs vs unleveraged cash/ETF",
-    "leveraged_indices": [
-      "SPX500",
-      "US30",
-      "US100",
-      "US500",
-      "UK100",
-      "GER40",
-      "GER30",
-      "JP225",
-      "AUS200",
-      "HK50",
-      "EU50",
-      "FRA40",
-      "EUSTX50",
-      "ESP35",
-      "CHN50",
-      "SG30",
-      "NAS100",
-      "DOW30",
-      "FTSE100",
-      "DAX40",
-      "NIKKEI225"
-    ],
-    "unleveraged_indices": [
-      "NIFTY50",
-      "NIFTY",
-      "SENSEX",
-      "BANKNIFTY",
-      "FINNIFTY",
-      "MIDCAPNIFTY",
-      "INDIA50"
-    ],
-    "index_point_values": {
-      "NIFTY50": 0.05,
-      "NIFTY": 0.05,
-      "SENSEX": 1.0,
-      "BANKNIFTY": 0.05,
-      "FINNIFTY": 0.05,
-      "MIDCAPNIFTY": 0.05,
-      "INDIA50": 0.05,
-      "SPX500": 0.1,
-      "US500": 0.1,
-      "US30": 1.0,
-      "DOW30": 1.0,
-      "US100": 0.1,
-      "NAS100": 0.1,
-      "UK100": 1.0,
-      "FTSE100": 1.0,
-      "GER40": 1.0,
-      "GER30": 1.0,
-      "DAX40": 1.0,
-      "JP225": 1.0,
-      "NIKKEI225": 1.0,
-      "AUS200": 1.0,
-      "HK50": 1.0,
-      "EU50": 1.0,
-      "FRA40": 1.0,
-      "EUSTX50": 1.0,
-      "ESP35": 1.0,
-      "CHN50": 1.0,
-      "SG30": 1.0
-    }
-  },
-
-  "message_mapping": {
-    "save_all_messages": true,
-    "structure": "nested_hierarchy",
-    
-    "fields": {
-      "main_msg_id": "admin_channel_message_id",
-      "tg_channel": "target_channel_id",
-      "tg_msg_ids": ["array_of_message_ids"],
-      "twitter": {
-        "tweet_id": "twitter_tweet_id",
-        "account": "twitter_account"
-      },
-      "parent_main_msg_id": "parent_message_id",
-      "parent_tg_msg_id": "parent_telegram_message_id",
-      "trade_id": "trade_ledger_id",
-      "ocr_symbol": "symbol_from_ocr",
-      "asset_class": "asset_class",
-      "leverage_multiplier": "leverage_multiplier",
-      "gemini_result": "ocr_data",
-      "is_position_update": true,
-      "is_admin_channel": true,
-      "position_update_data": {
-        "update_type": "TRAIL/CLOSED/CANCELLED/etc",
-        "update_text": "formatted_text",
-        "pair": "pair1/pair2"
-      },
-      "settings_applied": {
-        "telegram": "BOTH/CHART_ONLY/TEXT_ONLY",
-        "twitter": "BOTH/CHART_ONLY/TEXT_ONLY",
-        "pair": "pair1/pair2"
-      }
-    },
-    
-    "hierarchy": {
-      "original_trade": {
-        "level": 0,
-        "is_position_update": false,
-        "is_admin_channel": false,
-        "has_parent": false,
-        "is_root": true
-      },
-      "admin_position_update": {
-        "level": 1,
-        "is_position_update": true,
-        "is_admin_channel": true,
-        "has_parent": true,
-        "parent_field": "parent_main_msg_id",
-        "links_to_target": true
-      },
-      "target_position_update": {
-        "level": 1,
-        "is_position_update": true,
-        "is_admin_channel": false,
-        "has_parent": true,
-        "parent_field": "parent_tg_msg_id",
-        "links_to_admin": true
-      }
-    },
-    
-    "chain_resolution": {
-      "max_depth": 1000,
-      "prevent_cycles": true,
-      "resolve_parents": true
-    }
-  },
-
   "leverage_settings": {
     "enabled": true,
     "multipliers": {
       "FOREX": 50,
-      "FX": 50,
       "CRYPTO": 20,
-      "CRYPTOCURRENCY": 20,
       "METAL": 50,
-      "METALS": 50,
       "ENERGY": 20,
       "INDEX": 1,
-      "INDICES": 1,
       "STOCK": 1,
-      "STOCKS": 1,
-      "OPTION": 1,
-      "OPTIONS": 1,
-      "UNKNOWN": 1
-    },
-    "index_leverage_override": {
-      "description": "Override INDEX=1 for specific leveraged index CFDs",
-      "enabled": true,
-      "leveraged_indices_multiplier": 20,
-      "unleveraged_indices_multiplier": 1
-    },
-    
-    "tick_sizes": {
-      "USOIL": 0.01,
-      "UKOIL": 0.01,
-      "BRENT": 0.01,
-      "WTI": 0.01,
-      "NATGAS": 0.001,
-      "NATURALGAS": 0.001,
-      "GAS": 0.001,
-      "XTIUSD": 0.01,
-      "XBRUSD": 0.01,
-      "XNGUSD": 0.001
-    },
-    
-    "price_formatting": {
-      "FOREX": "{price:.4f}",
-      "METAL": "{price:.2f}",
-      "ENERGY": "{price:.2f}",
-      "CRYPTO": "{price:.2f}",
-      "INDEX": "{price:.2f}",
-      "STOCK": "{price:.2f}",
-      "OPTION": "{price:.2f}",
-      "UNKNOWN": "{price:.2f}"
-    },
-    
-    "display_options": {
-      "show_leverage_in_updates": true,
-      "calculate_leveraged_returns": true,
-      "show_price_change": true
+      "OPTION": 1
     }
   },
-
-  "locked_profit_display": {
-    "description": "Configuration for locked profit formatting by asset class",
-    "enabled": true,
-    
-    "formats": {
-      "INDEX": {
-        "unit": "points",
-        "show_leveraged_return": false,
-        "format": "+{value} points",
-        "decimal_places": 0
-      },
-      "FOREX": {
-        "unit": "pips",
-        "show_leveraged_return": true,
-        "format": "+{pips} pips / +{leveraged_return}% ({leverage}:1)",
-        "decimal_places": 0
-      },
-      "METAL": {
-        "unit": "pips",
-        "show_leveraged_return": true,
-        "format": "+{pips} pips / +{leveraged_return}% ({leverage}:1)",
-        "decimal_places": 0
-      },
-      "CRYPTO": {
-        "unit": "percent",
-        "show_leveraged_return": true,
-        "format": "+{price_move}% / +{leveraged_return}% ({leverage}:1)",
-        "decimal_places": 1
-      },
-      "STOCK": {
-        "unit": "percent",
-        "show_leveraged_return": true,
-        "format": "+{price_move}% / +{leveraged_return}% ({leverage}:1)",
-        "decimal_places": 1
-      },
-      "ENERGY": {
-        "unit": "ticks",
-        "show_leveraged_return": true,
-        "format": "+{ticks} ticks / +{leveraged_return}% ({leverage}:1)",
-        "decimal_places": 0
-      }
-    },
-    
-    "pip_definitions": {
-      "FOREX": 0.0001,
-      "JPY_PAIRS": 0.01,
-      "XAUUSD": 0.01,
-      "XAGUSD": 0.01,
-      "XPTUSD": 0.01,
-      "XPDUSD": 0.01
-    }
-  },
-
-  "position_update_formatting": {
-    "update_type_map": {
-      "PARTIAL": "🔹 PARTIAL CLOSE",
-      "CLOSEHALF": "½ CLOSE HALF",
-      "CLOSED": "✅ TRADE CLOSED",
-      "TARGET": "🎯 TARGET HIT",
-      "STOPPED": "🛑 STOPPED OUT",
-      "BREAKEVEN": "⚖️ BREAKEVEN",
-      "TRAIL": "🔁 TRAILING STOP",
-      "UPDATE_TARGET": "🎯 TARGET UPDATE",
-      "UPDATE_STOP": "🛑 STOP UPDATE",
-      "UPDATE_ENTRY": "⚡ ENTRY UPDATE",
-      "STOP": "🛑 STOP UPDATE",
-      "NEWTARGET": "🎯 TARGET UPDATE",
-      "NOTE": "📝 NOTE",
-      "CANCELLED": "⚠️ TRADE CANCELLED",
-      "NOT_TRIGGERED": "⚠️ TRADE CANCELLED",
-      "PYRAMID": "🔺 PYRAMID ADD"
-    },
-    
-    "fifo_display": {
-      "enabled": true,
-      "tree_prefixes": {
-        "branch": "├─",
-        "end": "└─"
-      },
-      "closed_indicator": "[{percentage}%]",
-      "show_entry_numbers": true,
-      "show_entry_prices": true,
-      "show_exit_prices": true,
-      "show_individual_pnl": true
-    },
-    
-    "common_fields": {
-      "symbol": true,
-      "asset_class": false,
-      "leverage": true,
-      "status": true
-    },
-    
-    "price_based_fields": {
-      "TRAIL": ["price"],
-      "CLOSED": ["entry", "price"],
-      "TARGET": ["entry", "price"],
-      "STOPPED": ["entry", "price"],
-      "PARTIAL": ["entry", "price", "remaining", "booked_pnl"],
-      "CLOSEHALF": ["entry", "price", "remaining", "booked_pnl"],
-      "UPDATE_STOP": ["price"],
-      "UPDATE_TARGET": ["price"],
-      "NEWTARGET": ["price"]
-    },
-    
-    "locked_profit_display": {
-      "enabled": true,
-      "format": "• Minimum Locked Profit: {formatted_profit}",
-      "insert_after": "New Stop:",
-      "show_for_updates": ["TRAIL", "UPDATE_STOP", "STOP"]
-    },
-    
-    "booked_pnl_display": {
-      "enabled": true,
-      "format": "• Booked: {booked_pnl}",
-      "show_for_updates": ["PARTIAL", "CLOSEHALF"],
-      "include_percentage": true,
-      "include_leverage": true
-    }
-  },
-
-  "platform_settings": {
-    "pair1": {
-      "telegram": {
-        "enabled": true,
-        "stock_chart_post_type": "BOTH",
-        "compress_images": true,
-        "compression_quality": 82
-      },
-      "twitter": {
-        "enabled": true,
-        "stock_chart_post_type": "BOTH",
-        "account": "TW1"
-      },
-      "position_updates": "TELEGRAM_ONLY",
-      "leverage_display": true
-    },
-    "pair2": {
-      "telegram": {
-        "enabled": true,
-        "stock_chart_post_type": "BOTH",
-        "compress_images": true,
-        "compression_quality": 82
-      },
-      "twitter": {
-        "enabled": true,
-        "stock_chart_post_type": "BOTH",
-        "account": "TW2"
-      },
-      "position_updates": "TELEGRAM_ONLY",
-      "leverage_display": true
-    }
-  },
-
-  "performance_settings": {
-    "buffer_timeout": 1.0,
-    "base_delay": 2.0,
-    "max_retries": 3,
-    "final_cooldown": 900,
-    "app_read_timeout": 30,
-    "app_write_timeout": 30,
-    "app_connect_timeout": 30
-  },
-
-  "hashtag_generation": {
-    "enabled": true,
-    "provider": "gemini",
-    "hashtags_to_generate": 15,
-    "hashtags_to_use": 5,
-    "hashtag_cache_size": 1000,
-    
-    "prompt": "You are an expert AI social media strategist focused exclusively on **Retail Traders**. Your task is to perform two steps:\n1. **Asset Resolution (Fact-Finding):** Determine the Full Company Name, Ticker, Sector, Asset Class, and Country for the input asset.\n2. **Hashtag Generation (Creative):** Use the resolved facts to generate the single best list of **{num_tags}** high-impact hashtags for a **Spot/Future LONG signal** on this asset.\n\n**Constraints & Output Format (STRICTLY adhere to this format):**\n- Output must contain two lines, separated by a newline. Do not include any other text or markdown.\n- **Line 1 (Resolution):** Must start with `[RESOLUTION]` and contain the resolved facts separated by pipes (`|`).\n    - Format: `[RESOLUTION] Full Company Name | Ticker | Sector | Asset Class | Country`\n- **Line 2 (Output):** Must start with `Output:` and contain ONLY the **{num_tags}** final hashtags, separated by spaces.",
-    
-    "cache_management": {
-      "enabled": true,
-      "max_age_days": 30,
-      "auto_cleanup": true
-    }
-  },
-
-  "admin_settings": {
-    "admin_ids": {
-      "users": [123456789],
-      "channels": [-1002495720174]
-    },
-    "send_stats_to_admin": true,
-    "log_level": "INFO",
-    "temp_dir": "/tmp/trading_bot"
-  },
-
   "file_paths": {
     "rate_limit_file": "rate_limit_state.json",
     "usage_stats_file": "usage_stats.json",
-    "mappings_file": "message_mappings.json",
-    "bot_state_file": "bot_state.json",
-    "ai_limit_file": "ai_limit_state.json",
-    "settings_file": "channel_settings.json",
-    "gemini_key_state_file": "gemini_key_state.json",
-    "hashtag_cache_file": "hashtag_cache.json",
-    "trade_ledger_file": "trade_ledger.json",
-    "fifo_state_file": "fifo_state.json"
-  },
-
-  "watchlist": {
-    "enabled": true,
-    "filter_unknown_symbols": true,
-    "gemini_rewrite_notes": true,
-    "check_interval_seconds": 60,
-    "formatting": {
-      "telegram_header": "📋 WATCHLIST | {symbol_count} Symbols\n\n{items}",
-      "item_format": "[Open]({message_link}) {symbol} {price_str} ({time_ago}) [Remove](remove:{watch_id})",
-      "footer": "\n\n[Close](close_watchlist)",
-      "empty_message": "📋 Watchlist is empty\n\nUse `/watch` with an image to add symbols"
-    }
+    "bot_state_file": "bot_state.json"
   }
 }

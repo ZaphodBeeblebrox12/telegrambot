@@ -6,7 +6,7 @@ from core.models import (
 )
 from core.repositories import (
     TradeRepository, MessageMappingRepository,
-    JSONTradeRepository, JSONMessageMappingRepository,
+    SQLTradeRepository, SQLMessageMappingRepository,
     RepositoryFactory
 )
 from core.fifo import FIFOCloseManager, get_fifo_manager
@@ -17,17 +17,20 @@ from core.outbox import (
     RetryPolicy, AsyncProcessor, OutboxManager,
     get_outbox
 )
+from core.db import Database, TradeModel, TradeEntryModel, TradeSnapshotModel, MessageMappingModel, OutboxMessageModel
 
 __all__ = [
     'Trade', 'TradeEntry', 'TradeUpdate', 'FIFOCloseRecord',
     'OCRResult', 'MessageMapping', 'ParsedCommand',
     'TradeStatus', 'EntryType',
     'TradeRepository', 'MessageMappingRepository',
-    'JSONTradeRepository', 'JSONMessageMappingRepository',
+    'SQLTradeRepository', 'SQLMessageMappingRepository',
     'RepositoryFactory',
     'FIFOCloseManager', 'get_fifo_manager',
     'TradeService', 'get_trade_service',
     'TradeIDGenerator', 'get_id_generator',
     'OutboxMessage', 'OutboxStatus', 'OutboxStore',
-    'RetryPolicy', 'AsyncProcessor', 'OutboxManager', 'get_outbox'
+    'RetryPolicy', 'AsyncProcessor', 'OutboxManager', 'get_outbox',
+    'Database', 'TradeModel', 'TradeEntryModel', 'TradeSnapshotModel',
+    'MessageMappingModel', 'OutboxMessageModel'
 ]

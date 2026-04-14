@@ -8,9 +8,8 @@ import google.generativeai as genai
 from config.config_loader import config
 from core.models import OCRResult
 
-
 class GeminiOCRService:
-    """OCR service using Google\'s Gemini API - fully config-driven"""
+    """OCR service using Google's Gemini API - fully config-driven"""
 
     def __init__(self):
         self.cfg = config.ocr
@@ -169,7 +168,6 @@ class GeminiOCRService:
             elif any(idx.upper().replace(" ", "") == symbol_clean for idx in unleveraged_indices):
                 return cfg.index_leverage_override.get("unleveraged_indices_multiplier", 1)
         return cfg.multipliers.get(asset_class, 1)
-
 
 _ocr_service: Optional[GeminiOCRService] = None
 

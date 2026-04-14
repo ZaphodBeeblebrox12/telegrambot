@@ -4,8 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from config.config_loader import config
-from core.models import TradeEntry, FIFOCloseRecord, EntryType
-
+from core.models import TradeEntry, FIFOCloseRecord
 
 @dataclass
 class FIFOCloseDetail:
@@ -13,7 +12,6 @@ class FIFOCloseDetail:
     entry_price: float
     closed_size: float
     pnl: float
-
 
 class FIFOCloseManager:
     """Manages FIFO closes for trade positions - Config-driven"""
@@ -29,26 +27,34 @@ class FIFOCloseManager:
         close_percentage: float,
         side: str
     ) -> Tuple[List[FIFOCloseDetail], float, float, float]:
+        """
+        Calculate FIFO close using entry.closed_size as source of truth.
+        CRITICAL FIX: remaining_size is (size - closed_size), never modified directly.
+        """
         if not entries:
             return [], 0.0, 0.0, 0.0
 
-        total_size = sum(e.remaining_size for e in entries)
-        if total_size == 0:
+        # Calculate remaining from closed_size (source of truth)
+        remaining_entries = [(e, e.size - e.closed_size) for e in entries]
+        total_remaining = sum(rem for _, rem in remaining_entries)
+
+        if total_remaining <= 0:
             return [], 0.0, 0.0, 0.0
 
-        close_amount = total_size * (close_percentage / 100)
+        close_amount = total_remaining * (close_percentage / 100)
         remaining_to_close = close_amount
 
         close_details: List[FIFOCloseDetail] = []
         total_pnl = 0.0
 
-        for entry in entries:
+        # Process entries in FIFO order using ACTUAL remaining
+        for entry, actual_remaining in remaining_entries:
             if remaining_to_close <= 0:
                 break
-            if entry.remaining_size <= 0:
+            if actual_remaining <= 0:
                 continue
 
-            close_from_entry = min(entry.remaining_size, remaining_to_close)
+            close_from_entry = min(actual_remaining, remaining_to_close)
 
             if side == "LONG":
                 pnl = (exit_price - entry.entry_price) * close_from_entry
@@ -65,24 +71,30 @@ class FIFOCloseManager:
             total_pnl += pnl
             remaining_to_close -= close_from_entry
 
-        remaining_size = total_size - close_amount
+        new_remaining_size = total_remaining - close_amount
 
-        if remaining_size > 0:
+        # Calculate new weighted average based on what will remain AFTER this close
+        if new_remaining_size > 0:
             weighted_sum = 0.0
-            for entry in entries:
-                remaining = entry.remaining_size
+            for entry, actual_remaining in remaining_entries:
+                # Calculate how much will remain after this close
+                remaining_after = actual_remaining
                 for detail in close_details:
                     if detail.entry_id == entry.entry_id:
-                        remaining -= detail.closed_size
+                        remaining_after -= detail.closed_size
                         break
-                weighted_sum += entry.entry_price * remaining
-            new_weighted_avg = weighted_sum / remaining_size
+                weighted_sum += entry.entry_price * remaining_after
+            new_weighted_avg = weighted_sum / new_remaining_size
         else:
             new_weighted_avg = 0.0
 
-        return close_details, total_pnl, remaining_size, new_weighted_avg
+        return close_details, total_pnl, new_remaining_size, new_weighted_avg
 
     def apply_close(self, entries: List[TradeEntry], close_details: List[FIFOCloseDetail]) -> None:
+        """
+        Apply close to entries by ACCUMULATING closed_size.
+        CRITICAL FIX: Never subtract from remaining_size, only add to closed_size.
+        """
         for detail in close_details:
             for entry in entries:
                 if entry.entry_id == detail.entry_id:
@@ -111,6 +123,8 @@ class FIFOCloseManager:
         for i, entry in enumerate(entries):
             is_last = (i == len(entries) - 1)
             prefix = self.tree_prefixes.get("end", "└─") if is_last else self.tree_prefixes.get("branch", "├─")
+
+            actual_remaining = entry.size - entry.closed_size
 
             if entry.entry_id in closed_entry_ids:
                 detail = next(d for d in close_details if d.entry_id == entry.entry_id)
@@ -163,7 +177,6 @@ class FIFOCloseManager:
             remaining_size=remaining_size,
             new_weighted_avg=new_weighted_avg
         )
-
 
 _fifo_manager = None
 

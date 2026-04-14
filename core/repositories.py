@@ -1,13 +1,10 @@
-"""Repository pattern - Database abstraction for future PostgreSQL migration"""
+"""Repository pattern - SQL-based implementation"""
 import json
-import os
 from typing import Optional, List, Dict, Any
-from pathlib import Path
 from abc import ABC, abstractmethod
 
 from core.models import Trade, MessageMapping
-from config.config_loader import config
-
+from core.db import Database, TradeModel, TradeEntryModel, MessageMappingModel
 
 class TradeRepository(ABC):
     @abstractmethod
@@ -34,67 +31,135 @@ class TradeRepository(ABC):
     def get_all(self) -> List[Trade]:
         pass
 
+class SQLTradeRepository(TradeRepository):
+    """SQL-based trade repository using SQLAlchemy"""
 
-class JSONTradeRepository(TradeRepository):
-    def __init__(self, file_path: Optional[str] = None):
-        if file_path is None:
-            file_path = config.file_paths.get("trade_ledger_file", "trade_ledger.json")
-        self.file_path = Path(file_path)
-        self._ensure_file()
+    def __init__(self, db: Optional[Database] = None):
+        self.db = db or Database()
 
-    def _ensure_file(self):
-        if not self.file_path.exists():
-            self.file_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.file_path, "w") as f:
-                json.dump({}, f)
+    def _model_to_trade(self, trade_model: TradeModel) -> Trade:
+        """Convert SQLAlchemy model to domain Trade"""
+        trade = Trade(
+            trade_id=trade_model.trade_id,
+            symbol=trade_model.symbol,
+            asset_class=trade_model.asset_class,
+            side=trade_model.side,
+            entry_price=0.0,
+            status=trade_model.status,
+            created_at=trade_model.created_at.timestamp() if trade_model.created_at else 0
+        )
 
-    def _load_all(self) -> Dict[str, Any]:
-        try:
-            with open(self.file_path, "r") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
-            return {}
+        # Load entries
+        for entry_model in trade_model.entries:
+            from core.models import TradeEntry, EntryType
+            entry = TradeEntry(
+                entry_id=f"{trade_model.trade_id}-E{entry_model.sequence}",
+                entry_price=float(entry_model.entry_price),
+                size=float(entry_model.size),
+                type=EntryType(entry_model.entry_type),
+                timestamp=trade_model.created_at.timestamp() if trade_model.created_at else 0,
+                closed_size=float(entry_model.closed_size) if entry_model.closed_size else 0.0
+            )
+            trade.entries.append(entry)
 
-    def _save_all(self, data: Dict[str, Any]):
-        with open(self.file_path, "w") as f:
-            json.dump(data, f, indent=2)
+        # Set entry_price from first entry
+        if trade.entries:
+            trade.entry_price = trade.entries[0].entry_price
+
+        # Load snapshot if exists
+        if trade_model.snapshot:
+            trade.current_stop = float(trade_model.snapshot.current_stop) if trade_model.snapshot.current_stop else None
+
+        return trade
 
     def save(self, trade: Trade) -> None:
-        data = self._load_all()
-        data[trade.trade_id] = trade.to_dict()
-        self._save_all(data)
+        session = self.db.get_session()
+        try:
+            trade_model = session.query(TradeModel).filter_by(trade_id=trade.trade_id).first()
+
+            if trade_model is None:
+                trade_model = TradeModel(
+                    trade_id=trade.trade_id,
+                    symbol=trade.symbol,
+                    side=trade.side,
+                    asset_class=trade.asset_class,
+                    status=trade.status.value
+                )
+                session.add(trade_model)
+                session.flush()
+
+            # Update entries
+            session.query(TradeEntryModel).filter_by(trade_id=trade_model.id).delete()
+
+            for i, entry in enumerate(trade.entries):
+                entry_model = TradeEntryModel(
+                    trade_id=trade_model.id,
+                    entry_price=entry.entry_price,
+                    size=entry.size,
+                    closed_size=entry.closed_size,
+                    entry_type=entry.type.value,
+                    sequence=i + 1
+                )
+                session.add(entry_model)
+
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            raise e
+        finally:
+            session.close()
 
     def get(self, trade_id: str) -> Optional[Trade]:
-        data = self._load_all()
-        if trade_id in data:
-            return Trade.from_dict(data[trade_id])
-        return None
+        session = self.db.get_session()
+        try:
+            trade_model = session.query(TradeModel).filter_by(trade_id=trade_id).first()
+            if trade_model:
+                return self._model_to_trade(trade_model)
+            return None
+        finally:
+            session.close()
 
     def get_by_symbol(self, symbol: str, status: Optional[str] = None) -> List[Trade]:
-        data = self._load_all()
-        trades = []
-        for trade_data in data.values():
-            if trade_data["symbol"].upper() == symbol.upper():
-                if status is None or trade_data["status"] == status:
-                    trades.append(Trade.from_dict(trade_data))
-        return trades
+        session = self.db.get_session()
+        try:
+            query = session.query(TradeModel).filter(TradeModel.symbol.ilike(symbol))
+            if status:
+                query = query.filter_by(status=status)
+
+            return [self._model_to_trade(tm) for tm in query.all()]
+        finally:
+            session.close()
 
     def get_open_trades(self) -> List[Trade]:
-        data = self._load_all()
-        return [Trade.from_dict(t) for t in data.values() if t["status"] == "OPEN"]
+        session = self.db.get_session()
+        try:
+            trade_models = session.query(TradeModel).filter_by(status="OPEN").all()
+            return [self._model_to_trade(tm) for tm in trade_models]
+        finally:
+            session.close()
 
     def delete(self, trade_id: str) -> bool:
-        data = self._load_all()
-        if trade_id in data:
-            del data[trade_id]
-            self._save_all(data)
-            return True
-        return False
+        session = self.db.get_session()
+        try:
+            trade_model = session.query(TradeModel).filter_by(trade_id=trade_id).first()
+            if trade_model:
+                session.delete(trade_model)
+                session.commit()
+                return True
+            return False
+        except Exception:
+            session.rollback()
+            return False
+        finally:
+            session.close()
 
     def get_all(self) -> List[Trade]:
-        data = self._load_all()
-        return [Trade.from_dict(t) for t in data.values()]
-
+        session = self.db.get_session()
+        try:
+            trade_models = session.query(TradeModel).all()
+            return [self._model_to_trade(tm) for tm in trade_models]
+        finally:
+            session.close()
 
 class MessageMappingRepository(ABC):
     @abstractmethod
@@ -121,86 +186,148 @@ class MessageMappingRepository(ABC):
     def delete(self, main_msg_id: int) -> bool:
         pass
 
+class SQLMessageMappingRepository(MessageMappingRepository):
+    """SQL-based message mapping repository"""
 
-class JSONMessageMappingRepository(MessageMappingRepository):
-    def __init__(self, file_path: Optional[str] = None):
-        if file_path is None:
-            file_path = config.file_paths.get("mappings_file", "message_mappings.json")
-        self.file_path = Path(file_path)
-        self._ensure_file()
-
-    def _ensure_file(self):
-        if not self.file_path.exists():
-            self.file_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.file_path, "w") as f:
-                json.dump({}, f)
-
-    def _load_all(self) -> Dict[str, Any]:
-        try:
-            with open(self.file_path, "r") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
-            return {}
-
-    def _save_all(self, data: Dict[str, Any]):
-        with open(self.file_path, "w") as f:
-            json.dump(data, f, indent=2)
+    def __init__(self, db: Optional[Database] = None):
+        self.db = db or Database()
 
     def save(self, mapping: MessageMapping) -> None:
-        data = self._load_all()
-        data[str(mapping.main_msg_id)] = mapping.to_dict()
-        self._save_all(data)
+        session = self.db.get_session()
+        try:
+            trade_model = None
+            if mapping.trade_id:
+                trade_model = session.query(TradeModel).filter_by(trade_id=mapping.trade_id).first()
+
+            mapping_model = session.query(MessageMappingModel).filter_by(
+                message_id=str(mapping.main_msg_id),
+                platform="telegram"
+            ).first()
+
+            if mapping_model is None:
+                mapping_model = MessageMappingModel(
+                    message_id=str(mapping.main_msg_id),
+                    platform="telegram",
+                    message_type="main" if not mapping.is_position_update else "update"
+                )
+                session.add(mapping_model)
+
+            if trade_model:
+                mapping_model.trade_id = trade_model.id
+
+            mapping_model.channel_id = str(mapping.tg_channel) if mapping.tg_channel else None
+            mapping_model.parent_tg_msg_id = str(mapping.parent_tg_msg_id) if mapping.parent_tg_msg_id else None
+            mapping_model.parent_main_msg_id = str(mapping.parent_main_msg_id) if mapping.parent_main_msg_id else None
+
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            raise e
+        finally:
+            session.close()
 
     def get(self, main_msg_id: int) -> Optional[MessageMapping]:
-        data = self._load_all()
-        key = str(main_msg_id)
-        if key in data:
-            return MessageMapping.from_dict(data[key])
-        return None
+        session = self.db.get_session()
+        try:
+            mapping_model = session.query(MessageMappingModel).filter_by(
+                message_id=str(main_msg_id),
+                platform="telegram"
+            ).first()
+
+            if mapping_model:
+                return self._model_to_mapping(mapping_model)
+            return None
+        finally:
+            session.close()
 
     def get_by_trade_id(self, trade_id: str) -> Optional[MessageMapping]:
-        data = self._load_all()
-        for mapping_data in data.values():
-            if mapping_data.get("trade_id") == trade_id:
-                return MessageMapping.from_dict(mapping_data)
-        return None
+        session = self.db.get_session()
+        try:
+            trade_model = session.query(TradeModel).filter_by(trade_id=trade_id).first()
+            if not trade_model:
+                return None
+
+            mapping_model = session.query(MessageMappingModel).filter_by(
+                trade_id=trade_model.id,
+                platform="telegram"
+            ).first()
+
+            if mapping_model:
+                return self._model_to_mapping(mapping_model)
+            return None
+        finally:
+            session.close()
 
     def get_children(self, parent_msg_id: int) -> List[MessageMapping]:
-        data = self._load_all()
-        children = []
-        for mapping_data in data.values():
-            if mapping_data.get("parent_main_msg_id") == parent_msg_id:
-                children.append(MessageMapping.from_dict(mapping_data))
-        return children
+        session = self.db.get_session()
+        try:
+            mapping_models = session.query(MessageMappingModel).filter_by(
+                parent_main_msg_id=str(parent_msg_id),
+                platform="telegram"
+            ).all()
+
+            return [self._model_to_mapping(mm) for mm in mapping_models]
+        finally:
+            session.close()
 
     def get_all(self) -> List[MessageMapping]:
-        data = self._load_all()
-        return [MessageMapping.from_dict(m) for m in data.values()]
+        session = self.db.get_session()
+        try:
+            mapping_models = session.query(MessageMappingModel).filter_by(platform="telegram").all()
+            return [self._model_to_mapping(mm) for mm in mapping_models]
+        finally:
+            session.close()
 
     def delete(self, main_msg_id: int) -> bool:
-        data = self._load_all()
-        key = str(main_msg_id)
-        if key in data:
-            del data[key]
-            self._save_all(data)
-            return True
-        return False
+        session = self.db.get_session()
+        try:
+            mapping_model = session.query(MessageMappingModel).filter_by(
+                message_id=str(main_msg_id),
+                platform="telegram"
+            ).first()
 
+            if mapping_model:
+                session.delete(mapping_model)
+                session.commit()
+                return True
+            return False
+        except Exception:
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    def _model_to_mapping(self, model: MessageMappingModel) -> MessageMapping:
+        return MessageMapping(
+            main_msg_id=int(model.message_id) if model.message_id.isdigit() else 0,
+            tg_channel=int(model.channel_id) if model.channel_id and model.channel_id.isdigit() else 0,
+            trade_id=model.trade.trade_id if model.trade else None,
+            parent_main_msg_id=int(model.parent_main_msg_id) if model.parent_main_msg_id and model.parent_main_msg_id.isdigit() else None,
+            parent_tg_msg_id=int(model.parent_tg_msg_id) if model.parent_tg_msg_id and model.parent_tg_msg_id.isdigit() else None,
+            created_at=model.created_at.timestamp() if model.created_at else 0
+        )
 
 class RepositoryFactory:
     _trade_repo: Optional[TradeRepository] = None
     _mapping_repo: Optional[MessageMappingRepository] = None
+    _db: Optional[Database] = None
+
+    @classmethod
+    def get_database(cls) -> Database:
+        if cls._db is None:
+            cls._db = Database()
+        return cls._db
 
     @classmethod
     def get_trade_repository(cls) -> TradeRepository:
         if cls._trade_repo is None:
-            cls._trade_repo = JSONTradeRepository()
+            cls._trade_repo = SQLTradeRepository(cls.get_database())
         return cls._trade_repo
 
     @classmethod
     def get_mapping_repository(cls) -> MessageMappingRepository:
         if cls._mapping_repo is None:
-            cls._mapping_repo = JSONMessageMappingRepository()
+            cls._mapping_repo = SQLMessageMappingRepository(cls.get_database())
         return cls._mapping_repo
 
     @classmethod

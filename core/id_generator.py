@@ -4,7 +4,6 @@ from datetime import datetime
 from typing import Optional
 from core.repositories import RepositoryFactory
 
-
 class TradeIDGenerator:
     """Generates human-readable trade IDs: SYMBOL-YYYYMMDD-NN"""
 
@@ -64,8 +63,6 @@ class TradeIDGenerator:
         prefix = entry_type.upper()[:3]  # INIT or PYR
         return f"{trade_id}-ENTRY-{prefix}-{index:02d}"
 
-
-# Singleton
 _id_generator: Optional[TradeIDGenerator] = None
 
 def get_id_generator() -> TradeIDGenerator:

@@ -1,19 +1,15 @@
-"""Config-driven Message Formatter - All formatting from config"""
+"""Config-driven Message Formatter - Format messages by type and platform"""
 from typing import Dict, Any, Optional
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from config.config_loader import config
 from core.models import Trade
 
-
 class MessageFormatter:
-    """Formats messages using config-defined templates"""
+    """Formats messages based on config templates"""
 
     def __init__(self):
         self.cfg = config
-        self.price_cfg = config.price_formatting
-        self.leverage_cfg = config.leverage_settings
-        self.position_fmt = config.position_update_formatting
 
     def format_message(
         self,
@@ -23,189 +19,96 @@ class MessageFormatter:
         trade: Optional[Trade] = None
     ) -> str:
         """Format message using config template"""
-        msg_type_cfg = config.get_message_type(message_type)
-        if not msg_type_cfg:
+        msg_config = self.cfg.message_types.get(message_type)
+        if not msg_config:
             return self._format_fallback(message_type, variables)
 
-        # Get platform-specific format
-        template = msg_type_cfg.formatting.get(platform)
+        formatting = msg_config.get('formatting', {})
+        template = formatting.get(platform)
+
         if not template:
-            template = msg_type_cfg.formatting.get('telegram', '')
+            template = formatting.get('telegram', '')
 
         # Format variables
-        formatted_vars = self._prepare_variables(variables, trade, platform)
+        formatted_vars = self._format_variables(variables, trade)
 
         # Apply template
         try:
             return template.format(**formatted_vars)
         except KeyError as e:
-            # Fallback: replace known variables manually
+            # Fallback: manual replacement
             result = template
             for key, value in formatted_vars.items():
                 result = result.replace(f'{{{key}}}', str(value))
             return result
 
-    def _prepare_variables(
+    def _format_variables(
         self,
         variables: Dict[str, Any],
-        trade: Optional[Trade],
-        platform: str
+        trade: Optional[Trade]
     ) -> Dict[str, Any]:
-        """Prepare variables for formatting"""
-        result = dict(variables)
+        """Format variables for template substitution"""
+        formatted = {}
 
-        # Add trade-derived variables
-        if trade:
-            result.setdefault('symbol', trade.symbol)
-            result.setdefault('asset_class', trade.asset_class)
-            result.setdefault('side', trade.side)
-            result.setdefault('entry', self._format_price(trade.entry_price, trade.asset_class))
-            result.setdefault('leverage_multiplier', trade.leverage_multiplier)
-            result.setdefault('status', trade.status.value)
-            result.setdefault('entries_count', trade.entries_count)
-            result.setdefault('weighted_avg_entry', self._format_price(trade.weighted_avg_entry, trade.asset_class))
-
-        # Format price variables
-        asset_class = result.get('asset_class', 'UNKNOWN')
-        for key in ['price', 'target', 'stop_loss', 'current_stop', 'exit_price']:
-            if key in result and result[key] is not None:
-                result[key] = self._format_price(float(result[key]), asset_class)
-
-        # Calculate derived values
-        if 'price' in result and 'entry' in result and trade:
-            try:
-                price = float(variables.get('price', 0))
-                entry = trade.entry_price
-
-                # Price change
-                if trade.side == 'LONG':
-                    price_change = ((price - entry) / entry) * 100
+        for key, value in variables.items():
+            if isinstance(value, float):
+                # Format based on asset class
+                if trade:
+                    decimal_places = self._get_decimal_places(trade.asset_class)
+                    formatted[key] = f"{value:.{decimal_places}f}"
                 else:
-                    price_change = ((entry - price) / entry) * 100
-
-                result['price_change'] = f"{price_change:+.2f}%"
-
-                # Leveraged return
-                leverage = trade.leverage_multiplier
-                leveraged_return = price_change * leverage
-                result['position_return'] = f"{leveraged_return:+.2f}%"
-
-            except (ValueError, TypeError):
-                result['price_change'] = "N/A"
-                result['position_return'] = "N/A"
-
-        return result
-
-    def _format_price(self, price: float, asset_class: str) -> str:
-        """Format price according to config"""
-        if not self.price_cfg.enabled:
-            return str(price)
-
-        fmt_config = self.price_cfg.formats_by_asset.get(asset_class, {})
-        decimal_places = fmt_config.get('decimal_places', 2)
-        trim_zeros = fmt_config.get('trim_zeros', True)
-
-        # Format with specified decimals
-        formatted = f"{price:.{decimal_places}f}"
-
-        # Trim trailing zeros if configured
-        if trim_zeros and '.' in formatted:
-            formatted = formatted.rstrip('0').rstrip('.')
+                    formatted[key] = f"{value:.2f}"
+            else:
+                formatted[key] = value
 
         return formatted
 
-    def format_fifo_tree(
+    def _get_decimal_places(self, asset_class: str) -> int:
+        """Get decimal places for asset class"""
+        formats = self.cfg.price_formatting.get('formats_by_asset', {})
+        asset_config = formats.get(asset_class, {})
+        return asset_config.get('decimal_places', 2)
+
+    def _format_fallback(
         self,
-        header: str,
-        tree_lines: str,
-        booked_pnl: float,
-        remaining_size: float,
-        weighted_avg: float,
-        current_stop: float,
-        leverage: int,
-        platform: str
+        message_type: str,
+        variables: Dict[str, Any]
     ) -> str:
-        """Format FIFO tree from config template"""
-        msg_type = config.get_message_type('fifo_close_specific')
-        if not msg_type:
-            return f"{header}\n{tree_lines}"
-
-        template = msg_type.formatting.get(platform, msg_type.formatting.get('telegram', ''))
-
-        variables = {
-            'icon': '½' if 'HALF' in header else '🔹',
-            'percentage': '50' if 'HALF' in header else '25',
-            'symbol': header.split('|')[1].strip() if '|' in header else '',
-            'tree_lines': tree_lines,
-            'booked_pnl': f"{booked_pnl:+.2f}",
-            'remaining_size': f"{remaining_size:.2f}",
-            'weighted_avg': f"{weighted_avg:.2f}",
-            'current_stop': f"{current_stop:.2f}",
-            'leverage': leverage,
-            'status': 'OPEN'
-        }
-
-        try:
-            return template.format(**variables)
-        except KeyError:
-            result = template
-            for key, value in variables.items():
-                result = result.replace(f'{{{key}}}', str(value))
-            return result
-
-    def format_position_update(
-        self,
-        update_type: str,
-        symbol: str,
-        platform: str,
-        **kwargs
-    ) -> str:
-        """Format position update using config"""
-        # Get update type map
-        type_map = self.position_fmt.get('update_type_map', {})
-        header = type_map.get(update_type, update_type)
-
-        # Get message type config
-        msg_type_name = f"{update_type.lower()}_specific"
-        msg_type = config.get_message_type(msg_type_name)
-
-        if msg_type:
-            template = msg_type.formatting.get(platform, msg_type.formatting.get('telegram', ''))
-            try:
-                return template.format(symbol=symbol, **kwargs)
-            except KeyError:
-                pass
-
-        # Fallback formatting
-        return self._format_fallback(update_type, {'symbol': symbol, **kwargs})
-
-    def _format_fallback(self, message_type: str, variables: Dict[str, Any]) -> str:
-        """Fallback formatting when config not found"""
-        lines = [f"Update: {message_type}"]
+        """Fallback formatting when no config found"""
+        lines = [f"** {message_type.upper()} **"]
         for key, value in variables.items():
-            if value is not None:
-                lines.append(f"• {key}: {value}")
+            lines.append(f"• {key.replace('_', ' ').title()}: {value}")
         return "\n".join(lines)
 
-    def get_leverage_multiplier(self, asset_class: str, symbol: str = '') -> int:
-        """Get leverage multiplier from config"""
-        if not self.leverage_cfg.enabled:
-            return 1
+    def format_price(self, price: float, asset_class: str) -> str:
+        """Format price for asset class"""
+        decimal_places = self._get_decimal_places(asset_class)
+        return f"{price:.{decimal_places}f}"
 
-        # Check index override
-        if asset_class == 'INDEX' and self.leverage_cfg.index_leverage_override.get('enabled'):
-            leveraged = self.leverage_cfg.index_leverage_override.get('leveraged_indices', [])
-            unleveraged = self.leverage_cfg.index_leverage_override.get('unleveraged_indices', [])
+    def format_percentage(self, value: float, include_sign: bool = True) -> str:
+        """Format percentage"""
+        if include_sign:
+            return f"{value:+.2f}%"
+        return f"{value:.2f}%"
 
-            symbol_clean = symbol.upper().replace(' ', '')
+    def format_pnl(self, pnl: float, asset_class: str) -> str:
+        """Format PnL with appropriate units"""
+        locked_cfg = self.cfg.locked_profit_display
+        formats = locked_cfg.get('formats', {})
+        asset_format = formats.get(asset_class, {})
 
-            if any(idx.upper().replace(' ', '') == symbol_clean for idx in leveraged):
-                return self.leverage_cfg.index_leverage_override.get('leveraged_indices_multiplier', 20)
-            if any(idx.upper().replace(' ', '') == symbol_clean for idx in unleveraged):
-                return self.leverage_cfg.index_leverage_override.get('unleveraged_indices_multiplier', 1)
+        unit = asset_format.get('unit', 'points')
 
-        return self.leverage_cfg.multipliers.get(asset_class, 1)
+        if unit == 'pips':
+            return f"{pnl:+.0f} pips"
+        elif unit == 'points':
+            return f"{pnl:+.0f} points"
+        elif unit == 'percent':
+            return f"{pnl:+.1f}%"
+        elif unit == 'ticks':
+            return f"{pnl:+.0f} ticks"
 
+        return f"{pnl:+.2f}"
 
 # Singleton
 _formatter: Optional[MessageFormatter] = None

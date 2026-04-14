@@ -2,7 +2,7 @@
 Database layer - SQLAlchemy models
 """
 from sqlalchemy import (
-    create_engine, Column, Integer, String, DateTime, 
+    create_engine, Column, Integer, String, DateTime,
     Numeric, ForeignKey, Text, Boolean
 )
 from sqlalchemy.ext.declarative import declarative_base
@@ -10,7 +10,6 @@ from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 
 Base = declarative_base()
-
 
 class TradeModel(Base):
     __tablename__ = "trades"
@@ -28,7 +27,6 @@ class TradeModel(Base):
     snapshot = relationship("TradeSnapshotModel", back_populates="trade", uselist=False, cascade="all, delete-orphan")
     message_mappings = relationship("MessageMappingModel", back_populates="trade", cascade="all, delete-orphan")
 
-
 class TradeEntryModel(Base):
     __tablename__ = "trade_entries"
 
@@ -42,7 +40,6 @@ class TradeEntryModel(Base):
 
     trade = relationship("TradeModel", back_populates="entries")
 
-
 class TradeEventModel(Base):
     __tablename__ = "trade_events"
 
@@ -54,7 +51,6 @@ class TradeEventModel(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     trade = relationship("TradeModel", back_populates="events")
-
 
 class TradeSnapshotModel(Base):
     __tablename__ = "trade_snapshots"
@@ -72,7 +68,6 @@ class TradeSnapshotModel(Base):
 
     trade = relationship("TradeModel", back_populates="snapshot")
 
-
 class MessageMappingModel(Base):
     __tablename__ = "message_mappings"
 
@@ -89,6 +84,21 @@ class MessageMappingModel(Base):
 
     trade = relationship("TradeModel", back_populates="message_mappings")
 
+class OutboxMessageModel(Base):
+    __tablename__ = "outbox_messages"
+
+    id = Column(Integer, primary_key=True)
+    message_id = Column(String(50), unique=True, nullable=False, index=True)
+    destination = Column(String(50), nullable=False, index=True)
+    channel_id = Column(String(100))
+    message_type = Column(String(50), nullable=False)
+    payload = Column(Text, nullable=False)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    retry_count = Column(Integer, default=0)
+    max_retries = Column(Integer, default=3)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    processed_at = Column(DateTime)
+    error = Column(Text)
 
 class Database:
     def __init__(self, connection_string: str = "sqlite:///trading_bot.db"):

@@ -1,77 +1,53 @@
-# Trading Bot Pipeline
+# Trading Bot - Production Ready (Option A)
 
-Complete trading signal processing pipeline.
+Production-ready trading bot with SQL-based storage and FIFO partial close logic.
 
-## Pipeline Flow
+## Critical Fixes Applied
+
+### 🔴 CRITICAL FIX 1: SQL-Based Storage
+- Replaced JSON repositories with SQLAlchemy-based repositories
+- `RepositoryFactory.get_trade_repository()` returns `SQLTradeRepository`
+- `RepositoryFactory.get_mapping_repository()` returns `SQLMessageMappingRepository`
+- SQL is now SINGLE SOURCE OF TRUTH
+
+### 🔴 CRITICAL FIX 2: FIFO Partial Close Logic
+- Uses `entry.closed_size` as source of truth
+- Multiple partial closes accumulate correctly via `closed_size +=`
+- Weighted average recalculated from remaining position
+
+### 🔴 CRITICAL FIX 3: SQL-Based Outbox
+- Moved outbox storage from JSON file to SQL table
+- Transactional consistency with trade updates
+
+### 🟡 FIX 4: Removed Dead OCR Code
+- Removed dummy OCR service
+- Only Gemini OCR is used
+
+### 🟡 FIX 5: Consolidated Trade Logic
+- All trade calculations in `TradeService`
+- `SnapshotBuilder` is helper-only
+
+### 🟡 FIX 6: Message Mapping Consistency
+- SQL-based mapping persistence
+- Reply chain works reliably
+
+## Architecture Flow
 
 ```
-IMAGE / COMMAND → OCR → CONFIG → SERVICE → DB → FORMAT → TELEGRAM
+CONFIG → ROUTER → EXECUTOR → SERVICE → SQL → FORMATTER → MAPPING → OUTBOX → PUBLISHER
 ```
 
-## Quick Start
+## Setup
 
-1. **Install Dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+pip install -r requirements.txt
+cp .env.example .env
+python main.py
+```
 
-2. **Configure Environment**
-   ```bash
-   cp .env.example .env
-   # Edit .env with your settings
-   ```
+## Database Schema
 
-3. **Run the Bot**
-   ```bash
-   python main.py
-   ```
-
-## Architecture
-
-### Core Layer (`core/`)
-- **models.py**: Domain models (Trade, TradeEntry, TradeEvent)
-- **db.py**: SQLAlchemy database models
-- **services.py**: TradeService business logic
-- **fifo.py**: FIFO position closing engine
-- **snapshot.py**: Snapshot calculations
-- **repositories.py**: Data access layer
-
-### Orchestration Layer (`orchestration/`)
-- **orchestrator.py**: Main TradingPipeline
-- **command_router.py**: Command parsing
-- **config_executor.py**: Command execution
-- **formatter.py**: Message formatting
-
-### Messaging Layer (`messaging/`)
-- **message_mapping_service.py**: Trade-to-message mapping
-
-### OCR Layer (`ocr/`)
-- **ocr_service.py**: Image analysis (placeholder)
-
-### Bot Layer (`bot/`)
-- **telegram_bot.py**: Telegram integration
-
-## Database
-
-Supports MySQL and PostgreSQL. Tables:
-- `trades`: Trade headers
-- `trade_entries`: Entry records with FIFO tracking
-- `trade_events`: Event log with idempotency
-- `trade_snapshots`: Computed state
-- `message_mappings`: Platform message linking
-
-## Commands
-
-Reply to trade messages with:
-- `trail <price>` - Update stop loss
-- `close <price>` - Close full position
-- `partial <price>` - Close 25%
-- `closehalf <price>` - Close 50%
-
-## Critical Design Features
-
-1. **No UUID**: Uses base36 timestamp IDs
-2. **Deterministic Idempotency**: Prevents duplicate processing
-3. **DB-First Snapshots**: Always load from DB before update
-4. **O(n) FIFO**: Linear time partial closes
-5. **Threaded Replies**: Message mapping for conversation threading
+- **trades**: Core trade data
+- **trade_entries**: Entry prices with closed_size (FIFO source of truth)
+- **message_mappings**: Message relationships
+- **outbox_messages**: Pending messages with retry logic

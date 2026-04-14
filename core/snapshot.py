@@ -1,34 +1,26 @@
 """
-Snapshot Builder - Weighted average calculations
+Snapshot Builder - Weighted average calculations (FIX 5: Helper only)
 """
 from decimal import Decimal
-from typing import List
+from typing import List, TYPE_CHECKING
 
-from .models import TradeEntry
-
+if TYPE_CHECKING:
+    from core.models import TradeEntry
 
 class SnapshotBuilder:
-    """Builds trade snapshots - weighted average only."""
+    """Builds trade snapshots - helper class only (FIX 5).
 
-    def calculate_weighted_avg(self, entries: List[TradeEntry]) -> Decimal:
-        """Calculate weighted average entry price."""
+    All primary calculations now centralized in TradeService.
+    This class provides optional utility methods only.
+    """
+
+    @staticmethod
+    def calculate_weighted_avg(entries: List["TradeEntry"]) -> Decimal:
+        """Calculate weighted average entry price (helper method)."""
         total_value = sum(e.entry_price * e.remaining_size for e in entries)
         total_size = sum(e.remaining_size for e in entries)
 
         if total_size <= 0:
             return Decimal("0")
 
-        return total_value / total_size
-
-    def calculate_locked_profit(
-        self,
-        side: str,
-        weighted_avg: Decimal,
-        stop_price: Decimal,
-        position_size: Decimal
-    ) -> Decimal:
-        """Calculate locked profit based on stop position."""
-        if side.upper() == "LONG":
-            return (stop_price - weighted_avg) * position_size
-        else:
-            return (weighted_avg - stop_price) * position_size
+        return Decimal(str(total_value)) / Decimal(str(total_size))
