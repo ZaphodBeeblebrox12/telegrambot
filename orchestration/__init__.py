@@ -1,15 +1,15 @@
 """
-Orchestration Layer
+Orchestration Layer - Pipeline Coordination
 """
 
-from .config_executor import ConfigExecutor, ExecutionContext
-from .command_router import CommandRouter, ParsedCommand
-from .formatter import MessageFormatter
 from .orchestrator import TradingPipeline, PipelineResult
+from .command_router import CommandRouter, CommandParseResult
+from .config_executor import ConfigExecutor, ExecutionContext
+from .formatter import MessageFormatter
 
 __all__ = [
+    'TradingPipeline', 'PipelineResult',
+    'CommandRouter', 'CommandParseResult',
     'ConfigExecutor', 'ExecutionContext',
-    'CommandRouter', 'ParsedCommand',
-    'MessageFormatter',
-    'TradingPipeline', 'PipelineResult'
+    'MessageFormatter'
 ]

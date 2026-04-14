@@ -1,84 +1,76 @@
 """
-Formatter - Message generation from config
+Message Formatter - Format trade updates for different platforms
 """
 
-import json
 import logging
-from decimal import Decimal
+import json
 from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
-
 class MessageFormatter:
-    def __init__(self, config_path: str):
-        self.config = self._load_config(config_path)
-        self.message_types = self.config.get("message_types", {})
+    """Formats messages according to platform-specific templates."""
 
-    def _load_config(self, path: str) -> Dict[str, Any]:
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+    def __init__(self, config_path: str):
+        self.config_path = config_path
+        self.config = self._load_config()
+        logger.info("MessageFormatter initialized")
+
+    def _load_config(self) -> Dict:
+        """Load configuration from JSON file."""
+        try:
+            with open(self.config_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load config: {e}")
+            return {}
 
     def format(
-        self, 
-        message_type: str, 
-        platform: str, 
+        self,
+        message_type: str,
+        platform: str,
         data: Dict[str, Any]
     ) -> str:
-        type_config = self.message_types.get(message_type, {})
-        formatting = type_config.get("formatting", {})
+        """Format message for specified platform."""
+        msg_config = self.config.get("message_types", {}).get(message_type, {})
+        formatting = msg_config.get("formatting", {})
 
-        template = formatting.get(platform)
-        if not template:
-            return f"[{message_type}] {data.get('symbol', 'Unknown')}"
-
-        formatted_data = self._prepare_data(data)
-
-        if type_config.get("fifo_format", {}).get("enabled"):
-            formatted_data = self._add_fifo_tree(formatted_data, type_config)
+        template = formatting.get(platform, "{trade_id}: Update")
 
         try:
-            return template.format(**formatted_data)
-        except KeyError:
-            return template
+            # Handle special formatting for partial closes with tree
+            if message_type == "partial_close_specific" and "tree_lines" in data:
+                fifo_config = msg_config.get("fifo_format", {})
+                if fifo_config.get("enabled") and fifo_config.get("use_tree"):
+                    return self._format_partial_close_tree(template, data)
 
-    def _prepare_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        result = data.copy()
+            return template.format(**data)
+        except KeyError as e:
+            logger.error(f"Missing key {e} for formatting {message_type}")
+            return f"Update for {data.get('trade_id', 'Unknown')}"
+        except Exception as e:
+            logger.error(f"Formatting error: {e}")
+            return str(data)
 
-        for key in ["entry", "price", "target", "stop_loss", "weighted_avg"]:
-            if key in result:
-                try:
-                    val = Decimal(str(result[key]))
-                    result[key] = str(val.quantize(Decimal("0.00001"))).rstrip('0').rstrip('.')
-                except:
-                    pass
+    def _format_partial_close_tree(self, template: str, data: Dict[str, Any]) -> str:
+        """Format partial close with FIFO tree visualization."""
+        trade_id = data.get("trade_id", "Unknown")
+        percentage = data.get("percentage", "0")
+        pnl = data.get("pnl", "0")
+        tree_lines = data.get("tree_lines", "")
 
-        if "pnl" in result:
-            try:
-                val = Decimal(str(result["pnl"]))
-                result["pnl"] = f"{val:+.2f}"
-            except:
-                pass
+        # Build tree format
+        lines = [
+            f"🔹 PARTIAL CLOSE ({percentage}%)",
+            ""
+        ]
 
-        return result
+        if tree_lines:
+            lines.extend(tree_lines.split("\n"))
 
-    def _add_fifo_tree(self, data: Dict[str, Any], type_config: Dict) -> Dict[str, Any]:
-        fifo_result = data.get("fifo_result", {})
-        fifo_details = fifo_result.get("fifo", [])
+        lines.extend([
+            "",
+            f"• Booked: {pnl}"
+        ])
 
-        if not fifo_details:
-            data["tree_lines"] = ""
-            return data
-
-        lines = []
-        for i, detail in enumerate(fifo_details):
-            prefix = "└─" if i == len(fifo_details) - 1 else "├─"
-            entry_seq = detail.get("entry_sequence", i + 1)
-            taken = detail.get("taken", "0")
-            pnl = detail.get("pnl", "0")
-            lines.append(f"{prefix} Exit {entry_seq}: {taken} ({pnl})")
-
-        data["tree_lines"] = "\n".join(lines)
-        data["header"] = data.get("update_type", "UPDATE")
-
-        return data
+        return "\n".join(lines)

@@ -3,6 +3,13 @@ Message Mapping Service
 
 Links trade_id ↔ message_id for threading and reply chains.
 Integrates with MessageMapping table.
+
+Responsibilities:
+- Save message_id, chat_id, platform
+- Link trade_id ↔ message_id
+- Store parent_message_id for threading
+- Retrieve latest message for a trade
+- Support reply chains
 """
 
 import logging
@@ -16,12 +23,12 @@ from core.db import MessageMappingModel, Database
 
 logger = logging.getLogger(__name__)
 
-
 class MessageMappingService:
     """Service for managing message-to-trade mappings"""
 
     def __init__(self, db: Database):
         self.db = db
+        logger.info("MessageMappingService initialized")
 
     @contextmanager
     def _session(self):
@@ -40,7 +47,7 @@ class MessageMappingService:
         trade_id: int,
         platform: str,
         message_id: str,
-        channel_id: str,
+        channel_id: Optional[str],
         message_type: str,
         parent_message_id: Optional[str] = None
     ) -> None:
@@ -129,3 +136,21 @@ class MessageMappingService:
 
             result = session.execute(stmt).scalars().first()
             return result.message_id if result else None
+
+    def get_trade_by_message(
+        self,
+        platform: str,
+        message_id: str,
+        channel_id: Optional[str] = None
+    ) -> Optional[int]:
+        """Get trade_id by message_id (for reply handling)"""
+        with self._session() as session:
+            stmt = select(MessageMappingModel).where(
+                MessageMappingModel.platform == platform,
+                MessageMappingModel.message_id == message_id
+            )
+            if channel_id:
+                stmt = stmt.where(MessageMappingModel.channel_id == channel_id)
+
+            result = session.execute(stmt).scalars().first()
+            return result.trade_id if result else None

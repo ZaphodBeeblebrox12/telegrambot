@@ -1,19 +1,24 @@
 """
-Trading Engine Core
+Core Domain - Trade Management Engine
 """
 
-from .services import TradeService, generate_trade_id, make_idempotency_key
-from .db import Database
 from .models import (
     Trade, TradeEntry, TradeEvent, TradeSnapshot,
-    TradeStatus, EntryType, EventType, FIFOResult
+    TradeStatus, EntryType, EventType, FIFOCloseDetail, FIFOResult
 )
 from .fifo import FIFOEngine
 from .snapshot import SnapshotBuilder
+from .services import TradeService, generate_trade_id, make_idempotency_key
+from .repositories import TradeRepository
+from .db import Database, TradeModel, TradeEntryModel, TradeEventModel, TradeSnapshotModel, MessageMappingModel
 
 __all__ = [
-    'TradeService', 'generate_trade_id', 'make_idempotency_key', 'Database',
     'Trade', 'TradeEntry', 'TradeEvent', 'TradeSnapshot',
-    'TradeStatus', 'EntryType', 'EventType', 'FIFOResult',
-    'FIFOEngine', 'SnapshotBuilder'
+    'TradeStatus', 'EntryType', 'EventType',
+    'FIFOCloseDetail', 'FIFOResult',
+    'FIFOEngine', 'SnapshotBuilder', 'TradeService',
+    'TradeRepository', 'Database',
+    'TradeModel', 'TradeEntryModel', 'TradeEventModel',
+    'TradeSnapshotModel', 'MessageMappingModel',
+    'generate_trade_id', 'make_idempotency_key'
 ]

@@ -8,18 +8,15 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional, List, Dict, Any
 
-
 class TradeStatus(Enum):
     OPEN = "OPEN"
     CLOSED = "CLOSED"
     CANCELLED = "CANCELLED"
     NOT_TRIGGERED = "NOT_TRIGGERED"
 
-
 class EntryType(Enum):
     INITIAL = "INITIAL"
     PYRAMID = "PYRAMID"
-
 
 class EventType(Enum):
     TRADE_CREATED = "TRADE_CREATED"
@@ -29,7 +26,6 @@ class EventType(Enum):
     FULL_CLOSE = "FULL_CLOSE"
     PYRAMID_ADDED = "PYRAMID_ADDED"
     TRADE_CANCELLED = "TRADE_CANCELLED"
-
 
 @dataclass
 class TradeEntry:
@@ -49,7 +45,6 @@ class TradeEntry:
     def is_fully_closed(self) -> bool:
         return self.remaining_size <= 0
 
-
 @dataclass
 class Trade:
     symbol: str
@@ -68,12 +63,11 @@ class Trade:
 
     @property
     def remaining_size(self) -> Decimal:
-        return sum((e.remaining_size for e in self.entries), Decimal("0"))
+        return sum((e.remaining_size for e in his.entries), Decimal("0"))
 
     @property
     def is_closed(self) -> bool:
         return self.status in (TradeStatus.CLOSED, TradeStatus.CANCELLED, TradeStatus.NOT_TRIGGERED)
-
 
 @dataclass
 class TradeEvent:
@@ -83,7 +77,6 @@ class TradeEvent:
     id: Optional[int] = None
     idempotency_key: Optional[str] = None
     created_at: Optional[datetime] = None
-
 
 @dataclass
 class TradeSnapshot:
@@ -97,7 +90,6 @@ class TradeSnapshot:
     snapshot_data: Dict[str, Any] = field(default_factory=dict)
     updated_at: Optional[datetime] = None
 
-
 @dataclass
 class FIFOCloseDetail:
     entry_sequence: int
@@ -106,7 +98,6 @@ class FIFOCloseDetail:
     exit_price: Decimal
     pnl: Decimal
     entry_type: EntryType
-
 
 @dataclass
 class FIFOResult:

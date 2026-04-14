@@ -1,5 +1,5 @@
 """
-OCR Layer
+OCR Layer - Image Analysis
 """
 
 from .ocr_service import OCRService

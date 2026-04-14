@@ -7,18 +7,16 @@ from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import (
-    BigInteger, String, DateTime, Numeric, ForeignKey, 
+    BigInteger, String, DateTime, Numeric, ForeignKey,
     JSON, create_engine, Index, UniqueConstraint
 )
 from sqlalchemy.orm import (
-    DeclarativeBase, Mapped, mapped_column, 
+    DeclarativeBase, Mapped, mapped_column,
     relationship, Session, sessionmaker
 )
 
-
 class Base(DeclarativeBase):
     pass
-
 
 class TradeModel(Base):
     __tablename__ = "trades"
@@ -35,11 +33,11 @@ class TradeModel(Base):
     )
 
     entries: Mapped[list["TradeEntryModel"]] = relationship(
-        back_populates="trade", cascade="all, delete-orphan", 
+        back_populates="trade", cascade="all, delete-orphan",
         order_by="TradeEntryModel.sequence", lazy="selectin"
     )
     events: Mapped[list["TradeEventModel"]] = relationship(
-        back_populates="trade", cascade="all, delete-orphan", 
+        back_populates="trade", cascade="all, delete-orphan",
         order_by="TradeEventModel.sequence"
     )
     snapshot: Mapped[Optional["TradeSnapshotModel"]] = relationship(
@@ -50,7 +48,6 @@ class TradeModel(Base):
         Index('ix_trades_status', 'status'),
         Index('ix_trades_symbol_status', 'symbol', 'status'),
     )
-
 
 class TradeEntryModel(Base):
     __tablename__ = "trade_entries"
@@ -72,7 +69,6 @@ class TradeEntryModel(Base):
         UniqueConstraint('trade_id', 'sequence', name='uix_trade_entry_sequence'),
         Index('ix_entries_trade_seq', 'trade_id', 'sequence'),
     )
-
 
 class TradeEventModel(Base):
     __tablename__ = "trade_events"
@@ -96,7 +92,6 @@ class TradeEventModel(Base):
         Index('ix_events_trade_type', 'trade_id', 'event_type'),
     )
 
-
 class TradeSnapshotModel(Base):
     __tablename__ = "trade_snapshots"
 
@@ -118,7 +113,6 @@ class TradeSnapshotModel(Base):
 
     trade: Mapped["TradeModel"] = relationship(back_populates="snapshot")
 
-
 class MessageMappingModel(Base):
     __tablename__ = "message_mappings"
 
@@ -134,11 +128,10 @@ class MessageMappingModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
-        UniqueConstraint('platform', 'channel_id', 'message_id', 
+        UniqueConstraint('platform', 'channel_id', 'message_id',
                         name='uix_platform_message'),
         Index('ix_mappings_trade', 'trade_id'),
     )
-
 
 class Database:
     def __init__(self, connection_string: str):
@@ -151,8 +144,8 @@ class Database:
             echo=False
         )
         self.SessionLocal = sessionmaker(
-            autocommit=False, 
-            autoflush=False, 
+            autocommit=False,
+            autoflush=False,
             bind=self.engine
         )
 

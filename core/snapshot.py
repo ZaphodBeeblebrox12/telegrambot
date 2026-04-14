@@ -7,15 +7,14 @@ from typing import Optional
 
 from .models import TradeSnapshot
 
-
 class SnapshotBuilder:
     def __init__(self):
         self.precision = Decimal("0.00000001")
 
     def calculate_locked_profit(
-        self, 
-        side: str, 
-        weighted_avg: Decimal, 
+        self,
+        side: str,
+        weighted_avg: Decimal,
         current_stop: Decimal,
         remaining_size: Decimal
     ) -> Decimal:

@@ -3,6 +3,11 @@ Telegram Bot Integration
 
 Receives messages, processes commands, interacts with TradingPipeline.
 Uses python-telegram-bot v20+ (async)
+
+Pipeline Integration:
+- Image → OCR → process_setup()
+- Text/Command → process_update()
+- MessageMappingService for threading
 """
 
 import logging
@@ -10,7 +15,7 @@ import os
 from decimal import Decimal
 from typing import Optional
 
-from telegram import Update, ReplyParameters
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -21,12 +26,12 @@ from telegram.ext import (
 
 from core.db import Database
 from core.services import TradeService
+from core.repositories import TradeRepository
 from orchestration.orchestrator import TradingPipeline
 from messaging.message_mapping_service import MessageMappingService
 from ocr.ocr_service import OCRService
 
 logger = logging.getLogger(__name__)
-
 
 class TradingBot:
     """Telegram bot for trading signal processing"""
@@ -43,22 +48,23 @@ class TradingBot:
 
         # Initialize services
         self.trade_service = TradeService(db)
+        self.trade_repo = TradeRepository(db)
         self.pipeline = TradingPipeline(config_path, self.trade_service)
         self.mapping_service = MessageMappingService(db)
         self.ocr = OCRService()
-
-        # Track admin channel
-        self.admin_channel_id: Optional[int] = None
 
         # Build application
         self.application = Application.builder().token(token).build()
         self._setup_handlers()
 
+        logger.info("TradingBot initialized")
+
     def _setup_handlers(self):
         """Setup message handlers"""
         # Commands
         self.application.add_handler(CommandHandler("start", self._cmd_start))
-        self.application.add_handler(CommandHandler("update", self._cmd_update))
+        self.application.add_handler(CommandHandler("help", self._cmd_help))
+        self.application.add_handler(CommandHandler("status", self._cmd_status))
 
         # Messages
         self.application.add_handler(MessageHandler(filters.PHOTO, self._handle_image))
@@ -72,33 +78,154 @@ class TradingBot:
         await update.message.reply_text(
             "🤖 Trading Bot Ready\n\n"
             "Send me a chart image to create a trade setup\n"
-            "Or use /update <command> to update existing trades"
+            "Reply to trade messages with commands:\n"
+            "• trail <price> - Update stop loss\n"
+            "• close <price> - Close full position\n"
+            "• partial <price> - Close 25% position\n"
+            "• closehalf <price> - Close 50% position"
         )
 
-    async def _cmd_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /update commands"""
+    async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /help command"""
+        await update.message.reply_text(
+            "📖 Available Commands:\n\n"
+            "/start - Start the bot\n"
+            "/help - Show this help\n"
+            "/status <trade_id> - Check trade status\n\n"
+            "Reply to any trade message with:\n"
+            "• trail <price>\n"
+            "• close <price>\n"
+            "• partial <price>"
+        )
+
+    async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /status command"""
+        args = context.args
+        if not args:
+            await update.message.reply_text("❌ Usage: /status <trade_id>")
+            return
+
+        trade_id = args[0].upper()
+        status = self.trade_service.get_trade_status(trade_id)
+
+        if not status:
+            await update.message.reply_text(f"❌ Trade {trade_id} not found")
+            return
+
+        msg = (
+            f"📊 Trade {status['trade_id']}\n"
+            f"Symbol: {status['symbol']} ({status['side']})\n"
+            f"Status: {status['status']}\n"
+            f"Entries: {len(status['entries'])}\n"
+            f"Remaining: {status['snapshot']['remaining_size']}"
+        )
+        await update.message.reply_text(msg)
+
+    async def _handle_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle chart image - create trade setup"""
         try:
-            # Extract command text (remove "/update ")
-            full_text = update.message.text
-            if not full_text or len(full_text) < 8:
-                await update.message.reply_text("❌ Usage: /update <command>")
+            processing_msg = await update.message.reply_text("📊 Analyzing chart...")
+
+            # Get image data
+            photo = update.message.photo[-1]  # Highest resolution
+            file = await context.bot.get_file(photo.file_id)
+            image_data = await file.download_as_bytearray()
+
+            # OCR Analysis
+            ocr_result = self.ocr.analyze_image(bytes(image_data))
+
+            if not ocr_result.get("setup_found"):
+                await processing_msg.edit_text("❌ No trade setup detected in image")
                 return
 
-            command_text = full_text[8:].strip()  # Remove "/update "
+            # Process through pipeline
+            result = self.pipeline.process_setup(ocr_result)
 
-            # Need trade_id from context or reply
-            trade_id = await self._get_trade_id_from_context(update, context)
-            if not trade_id:
-                await update.message.reply_text("❌ No trade context. Reply to a trade message.")
+            if not result.success:
+                await processing_msg.edit_text(f"❌ Error: {result.error}")
                 return
 
-            # Get symbol from trade
+            # Get trade ID and internal ID
+            trade_id = result.trade_id
+            trade_status = self.trade_service.get_trade_status(trade_id)
+            internal_id = trade_status.get("id", 0) if trade_status else 0
+
+            # Send formatted response (reply to original image)
+            sent_msg = await update.message.reply_text(
+                result.telegram_text,
+                reply_to_message_id=update.message.message_id
+            )
+
+            # Save mapping for threading
+            self.mapping_service.save_mapping(
+                trade_id=internal_id,
+                platform="telegram",
+                message_id=str(sent_msg.message_id),
+                channel_id=str(update.effective_chat.id),
+                message_type="trade_setup",
+                parent_message_id=None
+            )
+
+            # Delete processing message
+            await processing_msg.delete()
+
+            logger.info(f"Trade setup created: {trade_id}")
+
+        except Exception as e:
+            logger.exception("Error processing image")
+            await update.message.reply_text(f"❌ Error processing image: {str(e)}")
+
+    async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle text commands (implicit updates when replying to trades)"""
+        text = update.message.text.strip()
+
+        # Check if this is a reply to a trade message
+        replied_msg_id = None
+        if update.message.reply_to_message:
+            replied_msg_id = update.message.reply_to_message.message_id
+
+        if replied_msg_id:
+            # Try to find trade by message ID
+            trade_id = await self._get_trade_id_from_message(replied_msg_id)
+            if trade_id:
+                await self._process_update_command(update, context, text, trade_id)
+                return
+            else:
+                await update.message.reply_text("❌ Could not find trade for this message")
+                return
+
+        # Check if it looks like a standalone command
+        commands = ["TRAIL", "CLOSE", "PARTIAL", "TARGET", "STOP", "PYRAMID", "CANCEL", "CLOSEHALF"]
+        upper_text = text.upper()
+        if any(upper_text.startswith(cmd) for cmd in commands):
+            await update.message.reply_text(
+                "❌ Please reply to a trade message to use this command"
+            )
+            return
+
+        # Unknown text
+        await update.message.reply_text(
+            "📤 Send me a chart image to create a trade\n"
+            "Or reply to a trade message with a command"
+        )
+
+    async def _process_update_command(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        command_text: str,
+        trade_id: str
+    ):
+        """Process update command through pipeline"""
+        try:
+            # Get trade status for symbol
             trade_status = self.trade_service.get_trade_status(trade_id)
             if not trade_status:
                 await update.message.reply_text("❌ Trade not found")
                 return
 
             symbol = trade_status["symbol"]
+            internal_id = trade_status.get("id", 0)
 
             # Process through pipeline
             result = self.pipeline.process_command(
@@ -111,20 +238,31 @@ class TradingBot:
                 await update.message.reply_text(f"❌ Error: {result.error}")
                 return
 
-            # Send response
+            # Get parent message ID for threading
+            parent_id = self.mapping_service.get_parent_message_id(
+                trade_id=internal_id,
+                platform="telegram"
+            )
+
+            # Send response (reply to thread root)
+            reply_params = None
+            if parent_id:
+                from telegram import ReplyParameters
+                reply_params = ReplyParameters(message_id=int(parent_id))
+
             sent_msg = await update.message.reply_text(
                 result.telegram_text,
-                reply_parameters=ReplyParameters(message_id=update.message.message_id)
+                reply_parameters=reply_params
             )
 
             # Save mapping
             self.mapping_service.save_mapping(
-                trade_id=trade_status.get("id", 0),
+                trade_id=internal_id,
                 platform="telegram",
                 message_id=str(sent_msg.message_id),
                 channel_id=str(update.effective_chat.id),
                 message_type=result.message_type or "update",
-                parent_message_id=str(update.message.message_id)
+                parent_message_id=parent_id
             )
 
             logger.info(f"Update processed: {trade_id} - {command_text}")
@@ -133,90 +271,45 @@ class TradingBot:
             logger.exception("Error processing update command")
             await update.message.reply_text(f"❌ Error: {str(e)}")
 
-    async def _handle_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle chart image - create trade setup"""
+    async def _get_trade_id_from_message(self, message_id: int) -> Optional[str]:
+        """
+        Lookup trade_id by Telegram message ID.
+
+        Flow:
+        1. Query MessageMappingService → get internal trade_id (integer)
+        2. Use TradeRepository → fetch TradeModel
+        3. Return → trade.trade_id (string, human-readable ID)
+        """
         try:
-            await update.message.reply_text("📊 Analyzing chart...")
-
-            # Get image data
-            photo = update.message.photo[-1]  # Highest resolution
-            file = await context.bot.get_file(photo.file_id)
-            image_data = await file.download_as_bytearray()
-
-            # OCR Analysis
-            ocr_result = self.ocr.analyze_image(bytes(image_data))
-
-            if not ocr_result.get("setup_found"):
-                await update.message.reply_text("❌ No trade setup detected in image")
-                return
-
-            # Process through pipeline
-            result = self.pipeline.process_setup(ocr_result)
-
-            if not result.success:
-                await update.message.reply_text(f"❌ Error: {result.error}")
-                return
-
-            # Send formatted response
-            sent_msg = await update.message.reply_text(result.telegram_text)
-
-            # Get trade ID and internal ID
-            trade_id = result.trade_id
-            trade_status = self.trade_service.get_trade_status(trade_id)
-            internal_id = trade_status.get("id", 0) if trade_status else 0
-
-            # Save mapping
-            self.mapping_service.save_mapping(
-                trade_id=internal_id,
+            # Step 1: Get internal trade_id from message mapping
+            internal_trade_id = self.mapping_service.get_trade_by_message(
                 platform="telegram",
-                message_id=str(sent_msg.message_id),
-                channel_id=str(update.effective_chat.id),
-                message_type="trade_setup",
-                parent_message_id=None
+                message_id=str(message_id)
             )
 
-            logger.info(f"Trade setup created: {trade_id}")
+            if not internal_trade_id:
+                logger.debug(f"No mapping found for message_id: {message_id}")
+                return None
+
+            # Step 2: Fetch TradeModel using TradeRepository
+            from sqlalchemy import select
+            from core.db import TradeModel
+
+            with self.trade_repo.session() as session:
+                stmt = select(TradeModel).where(TradeModel.id == internal_trade_id)
+                trade_model = session.execute(stmt).scalar_one_or_none()
+
+                if trade_model:
+                    # Step 3: Return human-readable trade_id
+                    logger.debug(f"Found trade {trade_model.trade_id} for message {message_id}")
+                    return trade_model.trade_id
+                else:
+                    logger.warning(f"Trade with internal id {internal_trade_id} not found")
+                    return None
 
         except Exception as e:
-            logger.exception("Error processing image")
-            await update.message.reply_text(f"❌ Error processing image: {str(e)}")
-
-    async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle plain text (treat as command if looks like one)"""
-        text = update.message.text.strip().upper()
-
-        # Check if it looks like a command
-        commands = ["TRAIL", "CLOSE", "PARTIAL", "TARGET", "STOP", "PYRAMID", "CANCEL"]
-        if any(text.startswith(cmd) for cmd in commands):
-            # Treat as implicit /update
-            update.message.text = f"/update {text}"
-            return await self._cmd_update(update, context)
-
-        # Otherwise ignore or help
-        await update.message.reply_text(
-            "📤 Send me a chart image to create a trade\n"
-            "Or use /update <command> for existing trades"
-        )
-
-    async def _get_trade_id_from_context(
-        self, 
-        update: Update, 
-        context: ContextTypes.DEFAULT_TYPE
-    ) -> Optional[str]:
-        """Extract trade_id from reply or context"""
-        # Try to get from replied message
-        if update.message.reply_to_message:
-            reply_msg_id = update.message.reply_to_message.message_id
-
-            # Query DB for trade by message ID
-            # This is simplified - in production would query mapping table
-            # For now, check if bot_data has it
-            trade_id = context.bot_data.get(f"msg_{reply_msg_id}")
-            if trade_id:
-                return trade_id
-
-        # Try to get from user_data
-        return context.user_data.get("current_trade_id") if context.user_data else None
+            logger.error(f"Error looking up trade by message: {e}")
+            return None
 
     async def _handle_error(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle errors"""
@@ -227,6 +320,16 @@ class TradingBot:
             )
 
     def run(self):
-        """Start the bot"""
-        logger.info("Starting Telegram bot...")
+        """Start the bot (blocking)"""
+        logger.info("Starting Telegram bot polling...")
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    async def initialize(self):
+        """Initialize the bot (non-blocking)"""
+        await self.application.initialize()
+        await self.application.start()
+
+    async def shutdown(self):
+        """Shutdown the bot"""
+        await self.application.stop()
+        await self.application.shutdown()

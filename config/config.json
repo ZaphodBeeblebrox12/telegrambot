@@ -11,8 +11,8 @@
         "twitter": true
       },
       "formatting": {
-        "telegram": "\ud83d\udcc9 {symbol} ({asset_class})\\n\ud83d\udd0e Direction: {side}\\n\u26a1\ufe0f Entry: {entry}\\n\ud83c\udfaf Target: {target}\\n\ud83d\uded1 Stop: {stop_loss}",
-        "twitter": "\ud83d\udcc9 {symbol} ({asset_class})\\nDirection: {side}\\nEntry: {entry}\\nTarget: {target}\\nStop: {stop_loss}"
+        "telegram": "📉 {symbol} ({asset_class})\n🔎 Direction: {side}\n⚡️ Entry: {entry}\n🎯 Target: {target}\n🛑 Stop: {stop_loss}",
+        "twitter": "📉 {symbol} ({asset_class})\nDirection: {side}\nEntry: {entry}\nTarget: {target}\nStop: {stop_loss}"
       },
       "create_trade_ledger": true
     },
@@ -23,8 +23,8 @@
         "twitter": true
       },
       "formatting": {
-        "telegram": "\ud83d\udd39 PARTIAL CLOSE ({percentage}%)\\n{tree_lines}\\n\\n\u2022 Booked: {pnl}",
-        "twitter": "\ud83d\udd39 PARTIAL ({percentage}%)\\n{tree_lines}\\nBooked: {pnl}"
+        "telegram": "🔹 PARTIAL CLOSE ({percentage}%)\n{tree_lines}\n\n• Booked: {pnl}",
+        "twitter": "🔹 PARTIAL ({percentage}%)\n{tree_lines}\nBooked: {pnl}"
       },
       "fifo_format": {
         "enabled": true,
@@ -38,8 +38,8 @@
         "twitter": true
       },
       "formatting": {
-        "telegram": "\u2705 TRADE CLOSED\\n\u2022 PnL: {pnl}",
-        "twitter": "\u2705 CLOSED\\nPnL: {pnl}"
+        "telegram": "✅ TRADE CLOSED\n• PnL: {pnl}",
+        "twitter": "✅ CLOSED\nPnL: {pnl}"
       }
     },
     "trail_update_specific": {
@@ -49,8 +49,8 @@
         "twitter": true
       },
       "formatting": {
-        "telegram": "\ud83d\udd01 TRAILING STOP\\n\u2022 New Stop: {new_stop}",
-        "twitter": "\ud83d\udd01 TRAILING\\nStop: {new_stop}"
+        "telegram": "🔁 TRAILING STOP\n• New Stop: {new_stop}",
+        "twitter": "🔁 TRAILING\nStop: {new_stop}"
       }
     }
   },
@@ -87,39 +87,29 @@
       },
       "parse_patterns": [
         {
-          "pattern": "trail\\s+(\\d+\\.?\\d*)",
+          "pattern": "trail\s+(\d+\.?\d*)",
           "command": "TRAIL",
-          "extract": [
-            "price"
-          ]
+          "extract": ["price"]
         },
         {
-          "pattern": "closed\\s+(\\d+\\.?\\d*)",
+          "pattern": "closed\s+(\d+\.?\d*)",
           "command": "CLOSED",
-          "extract": [
-            "price"
-          ]
+          "extract": ["price"]
         },
         {
-          "pattern": "close\\s+(\\d+\\.?\\d*)",
+          "pattern": "close\s+(\d+\.?\d*)",
           "command": "CLOSE",
-          "extract": [
-            "price"
-          ]
+          "extract": ["price"]
         },
         {
-          "pattern": "partial\\s+(\\d+\\.?\\d*)",
+          "pattern": "partial\s+(\d+\.?\d*)",
           "command": "PARTIAL",
-          "extract": [
-            "price"
-          ]
+          "extract": ["price"]
         },
         {
-          "pattern": "closehalf\\s+(\\d+\\.?\\d*)",
+          "pattern": "closehalf\s+(\d+\.?\d*)",
           "command": "CLOSEHALF",
-          "extract": [
-            "price"
-          ]
+          "extract": ["price"]
         }
       ]
     }

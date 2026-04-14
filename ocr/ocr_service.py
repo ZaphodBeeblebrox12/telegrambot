@@ -1,8 +1,10 @@
 """
-OCR Service - Placeholder Implementation
+OCR Service - Image Analysis Bridge
 
-Returns structured trade data from image analysis.
-In production, this would integrate with Gemini/Vision API.
+Function: analyze_image(image) → returns structured trade data
+
+This is a placeholder/mock implementation.
+In production, integrate with Gemini Vision API or similar.
 """
 
 import logging
@@ -12,14 +14,13 @@ from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-
 class OCRService:
-    """Placeholder OCR service for trade chart analysis"""
+    """OCR service for trade chart analysis"""
 
     def __init__(self):
         self.sample_symbols = ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD", "BTCUSD"]
         self.sample_sides = ["LONG", "SHORT"]
-        self.sample_assets = ["FOREX", "CRYPTO", "METAL"]
+        logger.info("OCRService initialized (placeholder)")
 
     def analyze_image(self, image_data: bytes) -> Dict[str, Any]:
         """
@@ -34,7 +35,7 @@ class OCRService:
         logger.info(f"Analyzing image: {len(image_data)} bytes")
 
         # Placeholder: Return mock data
-        # In production, this calls Gemini API
+        # In production, this calls Vision API (Gemini, GPT-4V, etc.)
         symbol = random.choice(self.sample_symbols)
         side = random.choice(self.sample_sides)
         asset_class = "FOREX" if symbol in ["EURUSD", "GBPUSD", "USDJPY"] else "CRYPTO" if symbol == "BTCUSD" else "METAL"

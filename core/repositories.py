@@ -11,13 +11,12 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from .db import (
-    TradeModel, TradeEntryModel, TradeEventModel, 
+    TradeModel, TradeEntryModel, TradeEventModel,
     TradeSnapshotModel, Database
 )
 from .models import Trade, TradeEntry, TradeEvent, TradeSnapshot, TradeStatus, EntryType, EventType
 
 logger = logging.getLogger(__name__)
-
 
 class TradeRepository:
     def __init__(self, db: Database):

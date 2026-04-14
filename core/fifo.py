@@ -7,15 +7,14 @@ from typing import List, Tuple
 
 from .models import Trade, TradeEntry, FIFOCloseDetail, FIFOResult, EntryType
 
-
 class FIFOEngine:
     def __init__(self, precision: int = 8):
-        self.precision = Decimal(f"1.{'0' * precision}")
+        self.precision = Decimal(f"1.{chr(48)*precision}")
 
     def calculate_close(
-        self, 
-        trade: Trade, 
-        close_percentage: Decimal, 
+        self,
+        trade: Trade,
+        close_percentage: Decimal,
         exit_price: Decimal
     ) -> FIFOResult:
         if trade.is_closed:
@@ -68,9 +67,9 @@ class FIFOEngine:
         )
 
     def apply_close(
-        self, 
-        trade: Trade, 
-        close_percentage: Decimal, 
+        self,
+        trade: Trade,
+        close_percentage: Decimal,
         exit_price: Decimal
     ) -> FIFOResult:
         result = self.calculate_close(trade, close_percentage, exit_price)
@@ -99,8 +98,8 @@ class FIFOEngine:
         return (total_value / total_size).quantize(self.precision)
 
     def validate_pyramid_entry(
-        self, 
-        trade: Trade, 
+        self,
+        trade: Trade,
         entry_price: Decimal,
         min_price_move_pct: Decimal = Decimal("0.5")
     ) -> Tuple[bool, str]:

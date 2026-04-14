@@ -6,6 +6,7 @@ Fixes:
 - Deterministic idempotency keys
 - Snapshot loaded from DB first
 - FIFO O(n) performance
+- SnapshotBuilder ONLY for weighted average
 """
 
 import logging
@@ -22,7 +23,6 @@ from .db import Database
 
 logger = logging.getLogger(__name__)
 
-
 def generate_trade_id() -> str:
     """Generate collision-resistant trade ID using base36 timestamp"""
     import random
@@ -35,7 +35,6 @@ def generate_trade_id() -> str:
 
     return f"T{time_part}{random_part}"
 
-
 def _to_base36(n: int) -> str:
     """Convert integer to base36 string"""
     alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -46,7 +45,6 @@ def _to_base36(n: int) -> str:
         n, remainder = divmod(n, 36)
         result = alphabet[remainder] + result
     return result
-
 
 def make_idempotency_key(operation: str, trade_id: str, **params) -> str:
     """Generate deterministic idempotency key"""
@@ -60,7 +58,6 @@ def make_idempotency_key(operation: str, trade_id: str, **params) -> str:
         parts.append(str(params["size"]))
 
     return ":".join(parts)
-
 
 class TradeService:
     def __init__(self, db: Database):
@@ -123,10 +120,10 @@ class TradeService:
             )
             self.repo.insert_event(trade.id, event, session)
 
-            # Build initial snapshot
+            # Build initial snapshot using SnapshotBuilder ONLY
             total_size = sum(e.size for e in trade.entries)
             remaining_size = sum(e.remaining_size for e in trade.entries)
-            weighted_avg = self.fifo.calculate_weighted_avg(trade.entries)
+            weighted_avg = self.snapshot_builder.calculate_weighted_avg(trade.entries)
 
             locked_profit = Decimal("0")
             if stop_loss:
@@ -149,8 +146,8 @@ class TradeService:
             return trade
 
     def update_stop(
-        self, 
-        trade_id: str, 
+        self,
+        trade_id: str,
         new_stop: Decimal
     ) -> Tuple[bool, str]:
         with self._transaction() as session:
@@ -244,10 +241,10 @@ class TradeService:
             snapshot.total_booked_pnl += result.total_pnl
             snapshot.remaining_size = sum(e.remaining_size for e in trade.entries)
 
-            # Recalculate weighted avg
+            # Recalculate weighted avg using SnapshotBuilder ONLY
             remaining_entries = [e for e in trade.entries if e.remaining_size > 0]
             if remaining_entries:
-                snapshot.weighted_avg_entry = self.fifo.calculate_weighted_avg(remaining_entries)
+                snapshot.weighted_avg_entry = self.snapshot_builder.calculate_weighted_avg(remaining_entries)
 
             if snapshot.current_stop:
                 snapshot.locked_profit = self.snapshot_builder.calculate_locked_profit(
@@ -355,12 +352,12 @@ class TradeService:
             )
             self.repo.insert_event(trade.id, event, session)
 
-            # Load snapshot and update
+            # Load snapshot and update using SnapshotBuilder ONLY
             snapshot = self.repo.get_snapshot(trade.id, session)
             if not snapshot:
                 return False, "No snapshot found"
 
-            snapshot.weighted_avg_entry = self.fifo.calculate_weighted_avg(trade.entries)
+            snapshot.weighted_avg_entry = self.snapshot_builder.calculate_weighted_avg(trade.entries)
             snapshot.total_size = sum(e.size for e in trade.entries)
             snapshot.remaining_size = sum(e.remaining_size for e in trade.entries)
 

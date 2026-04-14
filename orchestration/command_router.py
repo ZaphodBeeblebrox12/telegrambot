@@ -1,117 +1,130 @@
 """
-CommandRouter - Parse commands from config
+Command Router - Parse text commands into structured actions
 """
 
+import logging
 import re
 import json
-import logging
-from decimal import Decimal
-from typing import Dict, Any, Optional, Tuple, List
 from dataclasses import dataclass
+from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-
 @dataclass
-class ParsedCommand:
-    command: str
+class CommandParseResult:
     message_type: str
+    command: str
     params: Dict[str, Any]
-    requires_price: bool
-    requires_note: bool
-    update_type: str
-
 
 class CommandRouter:
-    def __init__(self, config_path: str):
-        self.config = self._load_config(config_path)
-        self.update_config = self.config.get("command_processing", {}).get("/update", {})
-        self.command_mapping = self.update_config.get("command_mapping", {})
-        self.parse_patterns = self.update_config.get("parse_patterns", [])
+    """Routes text commands to message types and extracts parameters."""
 
-        self._compiled_patterns = []
-        for pattern_def in self.parse_patterns:
+    def __init__(self, config_path: str):
+        self.config_path = config_path
+        self.config = self._load_config()
+        self.patterns = self._compile_patterns()
+        logger.info("CommandRouter initialized")
+
+    def _load_config(self) -> Dict:
+        """Load configuration from JSON file."""
+        try:
+            with open(self.config_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load config: {e}")
+            return {}
+
+    def _compile_patterns(self) -> list:
+        """Compile regex patterns from config."""
+        patterns = []
+        cmd_config = self.config.get("command_processing", {})
+        update_config = cmd_config.get("/update", {})
+        parse_patterns = update_config.get("parse_patterns", [])
+
+        for p in parse_patterns:
             try:
-                compiled = re.compile(pattern_def["pattern"], re.IGNORECASE)
-                self._compiled_patterns.append({
+                compiled = re.compile(p["pattern"], re.IGNORECASE)
+                patterns.append({
                     "regex": compiled,
-                    "command": pattern_def.get("command"),
-                    "extract": pattern_def.get("extract", []),
-                    "has_percentage": pattern_def.get("has_percentage", False)
+                    "command": p["command"],
+                    "extract": p.get("extract", [])
                 })
             except re.error as e:
-                logger.error(f"Invalid regex: {e}")
+                logger.error(f"Invalid regex pattern: {p.get('pattern')}: {e}")
 
-    def _load_config(self, path: str) -> Dict[str, Any]:
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        return patterns
 
-    def parse(self, command_text: str) -> Optional[ParsedCommand]:
+    def parse(self, command_text: str) -> Optional[CommandParseResult]:
+        """
+        Parse command text into structured result.
+
+        Examples:
+        - "trail 1.08500" → TRAIL command
+        - "close 1.09000" → CLOSE command  
+        - "partial 1.08000" → PARTIAL command
+        """
         if not command_text:
             return None
 
-        command_text = command_text.strip()
+        text = command_text.strip()
+        upper_text = text.upper()
 
-        for pattern_def in self._compiled_patterns:
-            match = pattern_def["regex"].match(command_text)
+        cmd_config = self.config.get("command_processing", {})
+        update_config = cmd_config.get("/update", {})
+        mapping = update_config.get("command_mapping", {})
+
+        # Try regex patterns first
+        for pattern_def in self.patterns:
+            match = pattern_def["regex"].match(text)
             if match:
-                return self._build_parsed_command(
-                    pattern_def["command"],
-                    match,
-                    pattern_def["extract"],
-                    pattern_def["has_percentage"]
+                command = pattern_def["command"]
+                params = {}
+
+                # Extract named groups
+                for key in pattern_def["extract"]:
+                    try:
+                        params[key] = match.group(key)
+                    except IndexError:
+                        pass
+
+                # Get message type from mapping
+                cmd_def = mapping.get(command, {})
+                message_type = cmd_def.get("type", "unknown")
+
+                # Add default percentage if specified
+                if "percentage" in cmd_def:
+                    params["percentage"] = cmd_def["percentage"]
+
+                logger.debug(f"Matched pattern: {command} with params {params}")
+                return CommandParseResult(
+                    message_type=message_type,
+                    command=command,
+                    params=params
                 )
 
-        return None
+        # Try direct command matching
+        words = upper_text.split()
+        if words:
+            first_word = words[0]
+            if first_word in mapping:
+                cmd_def = mapping[first_word]
+                params = {}
 
-    def _build_parsed_command(
-        self, 
-        command: str, 
-        match: re.Match,
-        extract_fields: List[str],
-        has_percentage: bool
-    ) -> Optional[ParsedCommand]:
-
-        mapping = self.command_mapping.get(command)
-        if not mapping:
-            return None
-
-        params = {}
-        groups = match.groups()
-
-        for i, field in enumerate(extract_fields):
-            if i < len(groups):
-                value = groups[i]
-                if field in ["price", "percentage", "size_percentage"]:
+                # Extract price if present
+                if len(words) > 1:
                     try:
-                        params[field] = Decimal(value)
-                    except:
-                        params[field] = value
-                else:
-                    params[field] = value
+                        params["price"] = words[1]
+                    except (IndexError, ValueError):
+                        pass
 
-        if has_percentage and "percentage" not in params:
-            default_pct = mapping.get("percentage")
-            if default_pct:
-                params["percentage"] = Decimal(str(default_pct))
+                if "percentage" in cmd_def:
+                    params["percentage"] = cmd_def["percentage"]
 
-        return ParsedCommand(
-            command=command,
-            message_type=mapping.get("type", "position_update"),
-            params=params,
-            requires_price=mapping.get("requires_price", False),
-            requires_note=mapping.get("requires_note_text", False),
-            update_type=mapping.get("update_type", command)
-        )
+                return CommandParseResult(
+                    message_type=cmd_def.get("type", "unknown"),
+                    command=first_word,
+                    params=params
+                )
 
-    def validate_command(self, command_text: str) -> Tuple[bool, str]:
-        parsed = self.parse(command_text)
-        if not parsed:
-            return False, "Unknown command"
-
-        mapping = self.command_mapping.get(parsed.command, {})
-
-        if mapping.get("requires_price") and "price" not in parsed.params:
-            return False, f"Command requires price"
-
-        return True, "Valid"
+        logger.warning(f"No pattern matched for: {text}")
+        return None

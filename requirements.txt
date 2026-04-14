@@ -1,5 +1,14 @@
-# Trading Bot Requirements
+# Core Dependencies
 sqlalchemy>=2.0.0
 pymysql>=1.1.0
+psycopg2-binary>=2.9.0
+
+# Telegram Bot
 python-telegram-bot>=20.0
+
+# Configuration
 python-dotenv>=1.0.0
+
+# Optional: For production OCR (uncomment as needed)
+# google-generativeai>=0.3.0  # Gemini API
+# openai>=1.0.0               # GPT-4V
