@@ -1,10 +1,10 @@
 """
-Telegram Bot Integration - Fully Config-Driven
+Telegram Bot Integration - Fully Config-Driven with Outbox Pattern
 
 Receives messages, processes through orchestrator.
 Uses python-telegram-bot v20+ (async)
 
-Pipeline: CONFIG → ROUTER → EXECUTOR → SERVICE → FORMATTER → MAPPING → PUBLISHER
+Pipeline: CONFIG → ROUTER → EXECUTOR → SERVICE → FORMATTER → MAPPING → OUTBOX → PUBLISHER
 """
 import logging
 import os
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class TradingBot:
-    """Telegram bot for trading signal processing - fully config-driven."""
+    """Telegram bot for trading signal processing - fully config-driven with outbox."""
 
     def __init__(self, token: Optional[str] = None):
         self.token = token or os.getenv("TELEGRAM_BOT_TOKEN")
@@ -44,29 +44,26 @@ class TradingBot:
         self.application = Application.builder().token(self.token).build()
         self._setup_handlers()
 
-        logger.info("TradingBot initialized (config-driven v2.0)")
+        logger.info("TradingBot initialized (config-driven v2.0 with outbox)")
 
     def _setup_handlers(self):
         """Setup message handlers."""
-        # Core commands
         self.application.add_handler(CommandHandler("start", self._cmd_start))
         self.application.add_handler(CommandHandler("help", self._cmd_help))
         self.application.add_handler(CommandHandler("status", self._cmd_status))
 
-        # Messages
         self.application.add_handler(MessageHandler(filters.PHOTO, self._handle_image))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text))
 
-        # Errors
         self.application.add_error_handler(self._handle_error)
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command."""
         await update.message.reply_text(
-            "🤖 Trading Bot Ready (Config-Driven v2.0)\n\n"
+            "🤖 Trading Bot Ready (Config-Driven v2.0 + Outbox)\n\n"
             "Send me a chart image to create a trade setup\n"
             "Reply to trade messages with update commands.\n\n"
-            "Available commands: trail, closed, target, stopped,\n"
+            "Available: trail, closed, target, stopped,\n"
             "breakeven, partial, closehalf, pyramid, note, cancel"
         )
 
@@ -75,7 +72,7 @@ class TradingBot:
         handlers = self.orchestrator.executor.list_handlers()
         await update.message.reply_text(
             f"🤖 Config-Driven Trading Bot v{config.system.version}\n\n"
-            f"Registered handlers: {', '.join(handlers)}\n\n"
+            f"Handlers: {', '.join(handlers[:8])}...\n\n"
             "Reply to any trade message with:\n"
             "• trail <price> - Update trailing stop\n"
             "• closed <price> - Close trade\n"
@@ -99,21 +96,22 @@ class TradingBot:
             f"Handlers: {len(status['handlers_registered'])}\n"
             f"Total Trades: {status['trade_stats']['total_trades']}\n"
             f"Open Trades: {status['trade_stats']['open_trades']}\n"
-            f"Mappings: {status['mappings_count']}"
+            f"Mappings: {status['mappings_count']}\n"
+            f"Outbox Pending: {status['outbox_pending']}"
         )
         await update.message.reply_text(msg)
 
     async def _handle_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle chart image - create trade setup."""
+        """Handle chart image - create trade setup with outbox."""
         try:
-            processing_msg = await update.message.reply_text("📊 Analyzing chart with Gemini...")
+            processing_msg = await update.message.reply_text("📊 Analyzing chart...")
 
             # Get image data
-            photo = update.message.photo[-1]  # Highest resolution
+            photo = update.message.photo[-1]
             file = await context.bot.get_file(photo.file_id)
             image_data = await file.download_as_bytearray()
 
-            # Process through orchestrator
+            # Process through orchestrator (with outbox)
             result = await self.orchestrator.process_image(
                 image_bytes=bytes(image_data),
                 admin_channel_id=update.effective_chat.id,
@@ -125,38 +123,37 @@ class TradingBot:
                 await processing_msg.edit_text(f"❌ {error_msg}")
                 return
 
-            # Success - edit processing message
+            # Success
+            trade = result['trade']
+            outbox_count = len(result.get('outbox_ids', []))
+
             await processing_msg.edit_text(
-                f"✅ Trade setup created: {result['trade'].symbol}\n"
-                f"Trade ID: {result['trade'].trade_id[:8]}..."
+                f"✅ Trade created: {trade.symbol}\n"
+                f"ID: {trade.trade_id}\n"
+                f"Queued to {outbox_count} destinations"
             )
 
-            logger.info(f"Trade setup created: {result['trade'].trade_id}")
+            logger.info(f"Trade created: {trade.trade_id}")
 
         except Exception as e:
             logger.exception("Error processing image")
             await update.message.reply_text(f"❌ Error: {str(e)}")
 
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle text commands - config-driven through orchestrator."""
+        """Handle text commands."""
         text = update.message.text.strip()
 
-        # Check if this is a reply to a trade message
         replied_msg_id = None
         if update.message.reply_to_message:
             replied_msg_id = update.message.reply_to_message.message_id
 
         if replied_msg_id:
-            # Process as command
             await self._process_command(update, context, text, replied_msg_id)
             return
 
-        # Not a reply - check if it's a command
         if text.startswith('/'):
-            # Let command handlers deal with it
             return
 
-        # Unknown text
         await update.message.reply_text(
             "📤 Send me a chart image to create a trade\n"
             "Or reply to a trade message with a command"
@@ -169,7 +166,7 @@ class TradingBot:
         command_text: str,
         reply_to_msg_id: int
     ):
-        """Process command through orchestrator."""
+        """Process command through orchestrator with outbox."""
         try:
             result = await self.orchestrator.process_command(
                 command_text=command_text,
@@ -191,7 +188,7 @@ class TradingBot:
                 reply_parameters=ReplyParameters(message_id=reply_to_msg_id)
             )
 
-            # Delete command message if configured
+            # Delete command if configured
             cmd_config = config.commands.get('/update')
             if cmd_config and cmd_config.delete_command:
                 try:
@@ -213,17 +210,34 @@ class TradingBot:
                 "❌ An error occurred. Please try again."
             )
 
+    async def post_init(self, application: Application):
+        """Post-initialization hook - start outbox processor."""
+        logger.info("Starting outbox processor...")
+        # Start outbox processor in background
+        asyncio.create_task(self.orchestrator.start_outbox_processor(interval=5.0))
+
+    async def post_shutdown(self, application: Application):
+        """Post-shutdown hook - stop outbox processor."""
+        logger.info("Stopping outbox processor...")
+        self.orchestrator.stop_outbox_processor()
+
     def run(self):
         """Start the bot (blocking)."""
         logger.info("Starting Telegram bot polling...")
+
+        self.application.post_init = self.post_init
+        self.application.post_shutdown = self.post_shutdown
+
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
     async def initialize(self):
         """Initialize the bot (non-blocking)."""
         await self.application.initialize()
         await self.application.start()
+        asyncio.create_task(self.orchestrator.start_outbox_processor(interval=5.0))
 
     async def shutdown(self):
         """Shutdown the bot."""
+        self.orchestrator.stop_outbox_processor()
         await self.application.stop()
         await self.application.shutdown()

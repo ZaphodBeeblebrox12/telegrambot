@@ -1,12 +1,12 @@
 """Config-driven Trade Service - Business logic layer"""
 from typing import Optional, Dict, Any, List
 from datetime import datetime
-import uuid
 
 from config.config_loader import config
 from core.models import Trade, TradeEntry, EntryType, TradeStatus, OCRResult
 from core.repositories import RepositoryFactory
 from core.fifo import get_fifo_manager
+from core.id_generator import get_id_generator
 from ocr.gemini_ocr import get_ocr_service
 
 
@@ -18,14 +18,22 @@ class TradeService:
         self.repo = RepositoryFactory.get_trade_repository()
         self.fifo_mgr = get_fifo_manager()
         self.ocr_service = get_ocr_service()
+        self.id_gen = get_id_generator()
 
     def create_trade_from_ocr(self, ocr_result: OCRResult) -> Optional[Trade]:
-        """Create new trade from OCR result"""
+        """Create new trade from OCR result with DETERMINISTIC ID"""
         if not ocr_result.is_valid:
             return None
 
         if not self.cfg.enabled or not self.cfg.auto_create:
             return None
+
+        # Generate DETERMINISTIC trade ID (not UUID)
+        # Format: SYMBOL-YYYYMMDD-NN
+        trade_id = self.id_gen.generate(
+            symbol=ocr_result.symbol,
+            timestamp=datetime.now().timestamp()
+        )
 
         # Get leverage multiplier
         leverage = self.ocr_service.get_leverage_multiplier(
@@ -34,7 +42,7 @@ class TradeService:
         )
 
         trade = Trade(
-            trade_id=str(uuid.uuid4()),
+            trade_id=trade_id,  # Human-readable ID
             symbol=ocr_result.symbol,
             asset_class=ocr_result.asset_class,
             side=ocr_result.side.upper(),
@@ -46,9 +54,10 @@ class TradeService:
             status=TradeStatus.OPEN
         )
 
-        # Create initial entry
+        # Create initial entry with deterministic ID
+        entry_id = self.id_gen.generate_entry_id(trade_id, 'INITIAL', 1)
         entry = TradeEntry(
-            entry_id=str(uuid.uuid4()),
+            entry_id=entry_id,
             entry_price=trade.entry_price,
             size=1.0,
             type=EntryType.INITIAL,
@@ -85,7 +94,6 @@ class TradeService:
 
         trade.status = status
 
-        # Apply additional updates
         if 'current_stop' in kwargs:
             trade.current_stop = kwargs['current_stop']
 
@@ -103,13 +111,16 @@ class TradeService:
         if not trade:
             return None
 
-        # Check max pyramids
         max_pyramids = config.pyramid_settings.get('max_pyramids_per_trade', 5)
         if len(trade.entries) >= max_pyramids:
             return None
 
+        # Generate deterministic entry ID
+        entry_index = len(trade.entries) + 1
+        entry_id = self.id_gen.generate_entry_id(trade_id, 'PYRAMID', entry_index)
+
         entry = TradeEntry(
-            entry_id=str(uuid.uuid4()),
+            entry_id=entry_id,
             entry_price=entry_price,
             size=size,
             type=EntryType.PYRAMID,
@@ -131,10 +142,8 @@ class TradeService:
 
         calc_cfg = self.cfg.locked_profit_calculation
         if trade.side == 'LONG':
-            formula = calc_cfg.get('formula_long', 'new_stop - entry_price')
             locked = new_stop - trade.entry_price
         else:
-            formula = calc_cfg.get('formula_short', 'entry_price - new_stop')
             locked = trade.entry_price - new_stop
 
         return max(0, locked)
