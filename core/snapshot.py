@@ -1,43 +1,34 @@
 """
-Snapshot Builder - Derived state calculations
+Snapshot Builder - Weighted average calculations
 """
-
 from decimal import Decimal
-from typing import Optional
+from typing import List
 
-from .models import TradeSnapshot
+from .models import TradeEntry
+
 
 class SnapshotBuilder:
-    def __init__(self):
-        self.precision = Decimal("0.00000001")
+    """Builds trade snapshots - weighted average only."""
+
+    def calculate_weighted_avg(self, entries: List[TradeEntry]) -> Decimal:
+        """Calculate weighted average entry price."""
+        total_value = sum(e.entry_price * e.remaining_size for e in entries)
+        total_size = sum(e.remaining_size for e in entries)
+
+        if total_size <= 0:
+            return Decimal("0")
+
+        return total_value / total_size
 
     def calculate_locked_profit(
         self,
         side: str,
         weighted_avg: Decimal,
-        current_stop: Decimal,
-        remaining_size: Decimal
+        stop_price: Decimal,
+        position_size: Decimal
     ) -> Decimal:
-        if side == "LONG":
-            if current_stop > weighted_avg:
-                return ((current_stop - weighted_avg) * remaining_size).quantize(self.precision)
+        """Calculate locked profit based on stop position."""
+        if side.upper() == "LONG":
+            return (stop_price - weighted_avg) * position_size
         else:
-            if current_stop < weighted_avg:
-                return ((weighted_avg - current_stop) * remaining_size).quantize(self.precision)
-
-        return Decimal("0")
-
-    def calculate_weighted_avg(self, entries) -> Decimal:
-        total_value = Decimal("0")
-        total_size = Decimal("0")
-
-        for entry in entries:
-            remaining = entry.remaining_size
-            if remaining > 0:
-                total_value += entry.entry_price * remaining
-                total_size += remaining
-
-        if total_size == 0:
-            return Decimal("0")
-
-        return (total_value / total_size).quantize(self.precision)
+            return (weighted_avg - stop_price) * position_size

@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Dict, Any, Tuple, Optional
+import json
 
 from core.services import TradeService
 
@@ -24,28 +25,43 @@ class ExecutionContext:
     percentage: Optional[str] = None
     note_text: Optional[str] = None
 
+
 class ConfigExecutor:
-    """Executes commands through the TradeService."""
+    """Executes commands through the TradeService using config-driven execution_map."""
 
     def __init__(self, config_path: str, trade_service: TradeService):
         self.config_path = config_path
         self.service = trade_service
-        logger.info("ConfigExecutor initialized")
+        self.execution_map = self._load_execution_map()
+        logger.info("ConfigExecutor initialized with config-driven execution map")
+
+    def _load_execution_map(self) -> Dict[str, str]:
+        """Load execution_map from config file."""
+        try:
+            with open(self.config_path, 'r') as f:
+                config = json.load(f)
+            execution_map = config.get("execution_map", {})
+            logger.info(f"Loaded execution_map with {len(execution_map)} mappings")
+            return execution_map
+        except Exception as e:
+            logger.error(f"Failed to load execution_map from config: {e}")
+            return {}
 
     def execute(self, ctx: ExecutionContext) -> Tuple[bool, Dict[str, Any]]:
-        """Execute command based on message type."""
-        handlers = {
-            "trade_setup": self._handle_trade_setup,
-            "partial_close_specific": self._handle_partial_close,
-            "trade_close_specific": self._handle_full_close,
-            "trail_update_specific": self._handle_trail_update,
-        }
+        """Execute command based on message_type using config-driven execution_map."""
+        # Resolve service method from execution_map
+        service_method_name = self.execution_map.get(ctx.message_type)
 
-        handler = handlers.get(ctx.message_type)
-        if not handler:
-            return False, {"error": f"Unknown message type: {ctx.message_type}"}
+        if not service_method_name:
+            return False, {"error": f"No execution mapping for message type: {ctx.message_type}"}
 
-        return handler(ctx)
+        # Dynamically resolve service method
+        service_method = getattr(self.service, service_method_name, None)
+        if not service_method:
+            return False, {"error": f"Service method '{service_method_name}' not found for message type: {ctx.message_type}"}
+
+        # Execute the resolved method
+        return service_method(ctx)
 
     def _handle_trade_setup(self, ctx: ExecutionContext) -> Tuple[bool, Dict[str, Any]]:
         """Create new trade from OCR data."""

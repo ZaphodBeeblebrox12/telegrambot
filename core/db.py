@@ -1,156 +1,100 @@
 """
-Database Layer - SQLAlchemy Models
+Database layer - SQLAlchemy models
 """
-
-from datetime import datetime
-from decimal import Decimal
-from typing import Optional
-
 from sqlalchemy import (
-    BigInteger, String, DateTime, Numeric, ForeignKey,
-    JSON, create_engine, Index, UniqueConstraint
+    create_engine, Column, Integer, String, DateTime, 
+    Numeric, ForeignKey, Text, Boolean
 )
-from sqlalchemy.orm import (
-    DeclarativeBase, Mapped, mapped_column,
-    relationship, Session, sessionmaker
-)
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship
+from datetime import datetime
 
-class Base(DeclarativeBase):
-    pass
+Base = declarative_base()
+
 
 class TradeModel(Base):
     __tablename__ = "trades"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    trade_id: Mapped[str] = mapped_column(String(12), unique=True, index=True)
-    symbol: Mapped[str] = mapped_column(String(50), index=True)
-    side: Mapped[str] = mapped_column(String(10))
-    asset_class: Mapped[str] = mapped_column(String(20))
-    status: Mapped[str] = mapped_column(String(20), default="OPEN")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
-    )
+    id = Column(Integer, primary_key=True)
+    trade_id = Column(String(20), unique=True, nullable=False, index=True)
+    symbol = Column(String(20), nullable=False)
+    side = Column(String(10), nullable=False)
+    asset_class = Column(String(20), nullable=False)
+    status = Column(String(20), nullable=False, default="open")
+    created_at = Column(DateTime, default=datetime.utcnow)
 
-    entries: Mapped[list["TradeEntryModel"]] = relationship(
-        back_populates="trade", cascade="all, delete-orphan",
-        order_by="TradeEntryModel.sequence", lazy="selectin"
-    )
-    events: Mapped[list["TradeEventModel"]] = relationship(
-        back_populates="trade", cascade="all, delete-orphan",
-        order_by="TradeEventModel.sequence"
-    )
-    snapshot: Mapped[Optional["TradeSnapshotModel"]] = relationship(
-        back_populates="trade", uselist=False, cascade="all, delete-orphan"
-    )
+    entries = relationship("TradeEntryModel", back_populates="trade", cascade="all, delete-orphan")
+    events = relationship("TradeEventModel", back_populates="trade", cascade="all, delete-orphan")
+    snapshot = relationship("TradeSnapshotModel", back_populates="trade", uselist=False, cascade="all, delete-orphan")
+    message_mappings = relationship("MessageMappingModel", back_populates="trade", cascade="all, delete-orphan")
 
-    __table_args__ = (
-        Index('ix_trades_status', 'status'),
-        Index('ix_trades_symbol_status', 'symbol', 'status'),
-    )
 
 class TradeEntryModel(Base):
     __tablename__ = "trade_entries"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    trade_id: Mapped[int] = mapped_column(
-        ForeignKey("trades.id", ondelete="CASCADE"), index=True
-    )
-    sequence: Mapped[int] = mapped_column(BigInteger)
-    entry_price: Mapped[Decimal] = mapped_column(Numeric(19, 8))
-    size: Mapped[Decimal] = mapped_column(Numeric(19, 8))
-    closed_size: Mapped[Decimal] = mapped_column(Numeric(19, 8), default=Decimal("0"))
-    entry_type: Mapped[str] = mapped_column(String(20))
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    id = Column(Integer, primary_key=True)
+    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=False)
+    entry_price = Column(Numeric(20, 8), nullable=False)
+    size = Column(Numeric(20, 8), nullable=False)
+    closed_size = Column(Numeric(20, 8), default=0)
+    entry_type = Column(String(20), nullable=False)
+    sequence = Column(Integer, nullable=False)
 
-    trade: Mapped["TradeModel"] = relationship(back_populates="entries")
+    trade = relationship("TradeModel", back_populates="entries")
 
-    __table_args__ = (
-        UniqueConstraint('trade_id', 'sequence', name='uix_trade_entry_sequence'),
-        Index('ix_entries_trade_seq', 'trade_id', 'sequence'),
-    )
 
 class TradeEventModel(Base):
     __tablename__ = "trade_events"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    trade_id: Mapped[int] = mapped_column(
-        ForeignKey("trades.id", ondelete="CASCADE"), index=True
-    )
-    sequence: Mapped[int] = mapped_column(BigInteger)
-    event_type: Mapped[str] = mapped_column(String(50))
-    payload: Mapped[dict] = mapped_column(JSON)
-    idempotency_key: Mapped[Optional[str]] = mapped_column(
-        String(128), unique=True, nullable=True, index=True
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    id = Column(Integer, primary_key=True)
+    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=False)
+    event_type = Column(String(50), nullable=False)
+    payload = Column(Text)
+    idempotency_key = Column(String(255), unique=True, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
-    trade: Mapped["TradeModel"] = relationship(back_populates="events")
+    trade = relationship("TradeModel", back_populates="events")
 
-    __table_args__ = (
-        UniqueConstraint('trade_id', 'sequence', name='uix_trade_event_sequence'),
-        Index('ix_events_trade_type', 'trade_id', 'event_type'),
-    )
 
 class TradeSnapshotModel(Base):
     __tablename__ = "trade_snapshots"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    trade_id: Mapped[int] = mapped_column(
-        ForeignKey("trades.id", ondelete="CASCADE"), unique=True, index=True
-    )
-    weighted_avg_entry: Mapped[Decimal] = mapped_column(Numeric(19, 8))
-    total_size: Mapped[Decimal] = mapped_column(Numeric(19, 8))
-    remaining_size: Mapped[Decimal] = mapped_column(Numeric(19, 8))
-    current_stop: Mapped[Optional[Decimal]] = mapped_column(Numeric(19, 8), nullable=True)
-    current_target: Mapped[Optional[Decimal]] = mapped_column(Numeric(19, 8), nullable=True)
-    locked_profit: Mapped[Decimal] = mapped_column(Numeric(19, 8), default=Decimal("0"))
-    total_booked_pnl: Mapped[Decimal] = mapped_column(Numeric(19, 8), default=Decimal("0"))
-    snapshot_data: Mapped[dict] = mapped_column(JSON, default=dict)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
-    )
+    id = Column(Integer, primary_key=True)
+    trade_id = Column(Integer, ForeignKey("trades.id"), unique=True, nullable=False)
+    weighted_avg_entry = Column(Numeric(20, 8), nullable=False)
+    total_size = Column(Numeric(20, 8), nullable=False)
+    remaining_size = Column(Numeric(20, 8), nullable=False)
+    current_stop = Column(Numeric(20, 8))
+    current_target = Column(Numeric(20, 8))
+    locked_profit = Column(Numeric(20, 8), default=0)
+    total_booked_pnl = Column(Numeric(20, 8), default=0)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    trade: Mapped["TradeModel"] = relationship(back_populates="snapshot")
+    trade = relationship("TradeModel", back_populates="snapshot")
+
 
 class MessageMappingModel(Base):
     __tablename__ = "message_mappings"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    trade_id: Mapped[int] = mapped_column(
-        ForeignKey("trades.id", ondelete="CASCADE"), index=True
-    )
-    platform: Mapped[str] = mapped_column(String(20))
-    channel_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    message_id: Mapped[str] = mapped_column(String(50))
-    parent_message_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    message_type: Mapped[str] = mapped_column(String(20))
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    id = Column(Integer, primary_key=True)
+    trade_id = Column(Integer, ForeignKey("trades.id"), nullable=False, index=True)
+    platform = Column(String(50), nullable=False, index=True)
+    message_id = Column(String(100), nullable=False, index=True)
+    channel_id = Column(String(100))
+    message_type = Column(String(50), nullable=False)
+    parent_tg_msg_id = Column(String(100))
+    parent_main_msg_id = Column(String(100))
+    reply_to_message_id = Column(String(100))
+    created_at = Column(DateTime, default=datetime.utcnow)
 
-    __table_args__ = (
-        UniqueConstraint('platform', 'channel_id', 'message_id',
-                        name='uix_platform_message'),
-        Index('ix_mappings_trade', 'trade_id'),
-    )
+    trade = relationship("TradeModel", back_populates="message_mappings")
+
 
 class Database:
-    def __init__(self, connection_string: str):
-        self.engine = create_engine(
-            connection_string,
-            pool_pre_ping=True,
-            pool_recycle=3600,
-            pool_size=10,
-            max_overflow=20,
-            echo=False
-        )
-        self.SessionLocal = sessionmaker(
-            autocommit=False,
-            autoflush=False,
-            bind=self.engine
-        )
+    def __init__(self, connection_string: str = "sqlite:///trading_bot.db"):
+        self.engine = create_engine(connection_string)
+        Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine)
 
-    def create_tables(self):
-        Base.metadata.create_all(bind=self.engine)
-
-    def get_session(self) -> Session:
-        return self.SessionLocal()
+    def get_session(self):
+        return self.Session()

@@ -1,24 +1,39 @@
 """
-Core Domain - Trade Management Engine
+Core module - Domain models and business logic
 """
 
 from .models import (
-    Trade, TradeEntry, TradeEvent, TradeSnapshot,
-    TradeStatus, EntryType, EventType, FIFOCloseDetail, FIFOResult
+    Trade, 
+    TradeEntry, 
+    TradeStatus, 
+    EntryType, 
+    EventType,
+    FIFOResult,
+    TradeEvent,
+    TradeSnapshot
 )
-from .fifo import FIFOEngine
-from .snapshot import SnapshotBuilder
-from .services import TradeService, generate_trade_id, make_idempotency_key
+from .services import TradeService
 from .repositories import TradeRepository
-from .db import Database, TradeModel, TradeEntryModel, TradeEventModel, TradeSnapshotModel, MessageMappingModel
+from .fifo import FIFOEngine, FIFOEntryDetail
+from .snapshot import SnapshotBuilder
+from .db import Database, TradeModel, TradeEntryModel, MessageMappingModel
 
 __all__ = [
-    'Trade', 'TradeEntry', 'TradeEvent', 'TradeSnapshot',
-    'TradeStatus', 'EntryType', 'EventType',
-    'FIFOCloseDetail', 'FIFOResult',
-    'FIFOEngine', 'SnapshotBuilder', 'TradeService',
-    'TradeRepository', 'Database',
-    'TradeModel', 'TradeEntryModel', 'TradeEventModel',
-    'TradeSnapshotModel', 'MessageMappingModel',
-    'generate_trade_id', 'make_idempotency_key'
+    'Trade',
+    'TradeEntry',
+    'TradeStatus',
+    'EntryType',
+    'EventType',
+    'FIFOResult',
+    'TradeEvent',
+    'TradeSnapshot',
+    'TradeService',
+    'TradeRepository',
+    'FIFOEngine',
+    'FIFOEntryDetail',
+    'SnapshotBuilder',
+    'Database',
+    'TradeModel',
+    'TradeEntryModel',
+    'MessageMappingModel'
 ]

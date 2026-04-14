@@ -1,7 +1,11 @@
 """
-OCR Layer - Image Analysis
+OCR module - Image analysis
 """
 
-from .ocr_service import OCRService
+class OCRService:
+    """Placeholder OCR service."""
 
-__all__ = ['OCRService']
+    def analyze_image(self, image_data: bytes) -> dict:
+        """Analyze image for trade setup."""
+        # Placeholder - implement actual OCR
+        return {"setup_found": False}

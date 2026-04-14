@@ -1,5 +1,5 @@
 """
-Bot Layer - Telegram Integration
+Bot module - Telegram integration
 """
 
 from .telegram_bot import TradingBot

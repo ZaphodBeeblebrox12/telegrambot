@@ -1,15 +1,20 @@
 """
-Orchestration Layer - Pipeline Coordination
+Orchestration module - Config-driven trading pipeline
+
+Flow: CONFIG → ROUTER → EXECUTOR → SERVICE → FORMATTER → MAPPING → TELEGRAM
 """
 
-from .orchestrator import TradingPipeline, PipelineResult
 from .command_router import CommandRouter, CommandParseResult
 from .config_executor import ConfigExecutor, ExecutionContext
 from .formatter import MessageFormatter
+from .orchestrator import TradingPipeline, PipelineResult
 
 __all__ = [
-    'TradingPipeline', 'PipelineResult',
-    'CommandRouter', 'CommandParseResult',
-    'ConfigExecutor', 'ExecutionContext',
-    'MessageFormatter'
+    'CommandRouter',
+    'CommandParseResult',
+    'ConfigExecutor',
+    'ExecutionContext',
+    'MessageFormatter',
+    'TradingPipeline',
+    'PipelineResult'
 ]

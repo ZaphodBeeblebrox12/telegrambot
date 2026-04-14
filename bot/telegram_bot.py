@@ -1,12 +1,12 @@
 """
-Telegram Bot Integration
+Telegram Bot Integration - Config-Driven
 
-Receives messages, processes commands, interacts with TradingPipeline.
+Receives messages, processes commands through CommandRouter.
 Uses python-telegram-bot v20+ (async)
 
 Pipeline Integration:
 - Image → OCR → process_setup()
-- Text/Command → process_update()
+- Text/Command → process_command()
 - MessageMappingService for threading
 """
 
@@ -28,13 +28,15 @@ from core.db import Database
 from core.services import TradeService
 from core.repositories import TradeRepository
 from orchestration.orchestrator import TradingPipeline
+from orchestration.command_router import CommandRouter
 from messaging.message_mapping_service import MessageMappingService
 from ocr.ocr_service import OCRService
 
 logger = logging.getLogger(__name__)
 
+
 class TradingBot:
-    """Telegram bot for trading signal processing"""
+    """Telegram bot for trading signal processing - fully config-driven."""
 
     def __init__(
         self,
@@ -52,18 +54,20 @@ class TradingBot:
         self.pipeline = TradingPipeline(config_path, self.trade_service)
         self.mapping_service = MessageMappingService(db)
         self.ocr = OCRService()
+        self.command_router = CommandRouter(config_path)
 
         # Build application
         self.application = Application.builder().token(token).build()
         self._setup_handlers()
 
-        logger.info("TradingBot initialized")
+        logger.info("TradingBot initialized (config-driven)")
 
     def _setup_handlers(self):
-        """Setup message handlers"""
-        # Commands
+        """Setup message handlers - minimal, delegates to CommandRouter."""
+        # Only core bot commands (not trade commands)
         self.application.add_handler(CommandHandler("start", self._cmd_start))
-        self.application.add_handler(CommandHandler("help", self._cmd_help))
+
+        # All other commands go through CommandRouter
         self.application.add_handler(CommandHandler("status", self._cmd_status))
 
         # Messages
@@ -74,32 +78,15 @@ class TradingBot:
         self.application.add_error_handler(self._handle_error)
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /start command"""
+        """Handle /start command - static help."""
         await update.message.reply_text(
             "🤖 Trading Bot Ready\n\n"
             "Send me a chart image to create a trade setup\n"
-            "Reply to trade messages with commands:\n"
-            "• trail <price> - Update stop loss\n"
-            "• close <price> - Close full position\n"
-            "• partial <price> - Close 25% position\n"
-            "• closehalf <price> - Close 50% position"
-        )
-
-    async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /help command"""
-        await update.message.reply_text(
-            "📖 Available Commands:\n\n"
-            "/start - Start the bot\n"
-            "/help - Show this help\n"
-            "/status <trade_id> - Check trade status\n\n"
-            "Reply to any trade message with:\n"
-            "• trail <price>\n"
-            "• close <price>\n"
-            "• partial <price>"
+            "Reply to trade messages with commands."
         )
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /status command"""
+        """Handle /status command - uses CommandRouter for dynamic commands."""
         args = context.args
         if not args:
             await update.message.reply_text("❌ Usage: /status <trade_id>")
@@ -122,7 +109,7 @@ class TradingBot:
         await update.message.reply_text(msg)
 
     async def _handle_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle chart image - create trade setup"""
+        """Handle chart image - create trade setup."""
         try:
             processing_msg = await update.message.reply_text("📊 Analyzing chart...")
 
@@ -156,14 +143,16 @@ class TradingBot:
                 reply_to_message_id=update.message.message_id
             )
 
-            # Save mapping for threading
+            # Save mapping for threading - with full chain support
             self.mapping_service.save_mapping(
                 trade_id=internal_id,
                 platform="telegram",
                 message_id=str(sent_msg.message_id),
                 channel_id=str(update.effective_chat.id),
                 message_type="trade_setup",
-                parent_message_id=None
+                parent_tg_msg_id=None,
+                parent_main_msg_id=None,
+                reply_to_message_id=str(update.message.message_id)
             )
 
             # Delete processing message
@@ -176,7 +165,7 @@ class TradingBot:
             await update.message.reply_text(f"❌ Error processing image: {str(e)}")
 
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle text commands (implicit updates when replying to trades)"""
+        """Handle text commands - fully config-driven through CommandRouter."""
         text = update.message.text.strip()
 
         # Check if this is a reply to a trade message
@@ -188,16 +177,15 @@ class TradingBot:
             # Try to find trade by message ID
             trade_id = await self._get_trade_id_from_message(replied_msg_id)
             if trade_id:
-                await self._process_update_command(update, context, text, trade_id)
+                await self._process_command_through_router(update, context, text, trade_id, str(replied_msg_id))
                 return
             else:
                 await update.message.reply_text("❌ Could not find trade for this message")
                 return
 
-        # Check if it looks like a standalone command
-        commands = ["TRAIL", "CLOSE", "PARTIAL", "TARGET", "STOP", "PYRAMID", "CANCEL", "CLOSEHALF"]
-        upper_text = text.upper()
-        if any(upper_text.startswith(cmd) for cmd in commands):
+        # Not a reply - try to parse as standalone command through router
+        parsed = self.command_router.parse(text)
+        if parsed:
             await update.message.reply_text(
                 "❌ Please reply to a trade message to use this command"
             )
@@ -209,16 +197,17 @@ class TradingBot:
             "Or reply to a trade message with a command"
         )
 
-    async def _process_update_command(
+    async def _process_command_through_router(
         self,
         update: Update,
         context: ContextTypes.DEFAULT_TYPE,
         command_text: str,
-        trade_id: str
+        trade_id: str,
+        reply_to_msg_id: str
     ):
-        """Process update command through pipeline"""
+        """Process command through CommandRouter and Pipeline."""
         try:
-            # Get trade status for symbol
+            # Get trade status for symbol and internal ID
             trade_status = self.trade_service.get_trade_status(trade_id)
             if not trade_status:
                 await update.message.reply_text("❌ Trade not found")
@@ -238,37 +227,41 @@ class TradingBot:
                 await update.message.reply_text(f"❌ Error: {result.error}")
                 return
 
-            # Get parent message ID for threading
-            parent_id = self.mapping_service.get_parent_message_id(
+            # Resolve correct parent for nested replies (not always root)
+            parent_info = self.mapping_service.resolve_reply_parent(
                 trade_id=internal_id,
-                platform="telegram"
+                platform="telegram",
+                message_type=result.message_type,
+                reply_to_msg_id=reply_to_msg_id
             )
 
-            # Send response (reply to thread root)
+            # Send response with proper threading
             reply_params = None
-            if parent_id:
+            if parent_info:
                 from telegram import ReplyParameters
-                reply_params = ReplyParameters(message_id=int(parent_id))
+                reply_params = ReplyParameters(message_id=int(parent_info["message_id"]))
 
             sent_msg = await update.message.reply_text(
                 result.telegram_text,
                 reply_parameters=reply_params
             )
 
-            # Save mapping
+            # Save mapping with full chain info
             self.mapping_service.save_mapping(
                 trade_id=internal_id,
                 platform="telegram",
                 message_id=str(sent_msg.message_id),
                 channel_id=str(update.effective_chat.id),
                 message_type=result.message_type or "update",
-                parent_message_id=parent_id
+                parent_tg_msg_id=parent_info["message_id"] if parent_info else None,
+                parent_main_msg_id=None,
+                reply_to_message_id=reply_to_msg_id
             )
 
             logger.info(f"Update processed: {trade_id} - {command_text}")
 
         except Exception as e:
-            logger.exception("Error processing update command")
+            logger.exception("Error processing command")
             await update.message.reply_text(f"❌ Error: {str(e)}")
 
     async def _get_trade_id_from_message(self, message_id: int) -> Optional[str]:
@@ -312,7 +305,7 @@ class TradingBot:
             return None
 
     async def _handle_error(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle errors"""
+        """Handle errors."""
         logger.error(f"Update {update} caused error {context.error}")
         if update and update.effective_message:
             await update.effective_message.reply_text(
@@ -320,16 +313,16 @@ class TradingBot:
             )
 
     def run(self):
-        """Start the bot (blocking)"""
+        """Start the bot (blocking)."""
         logger.info("Starting Telegram bot polling...")
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
     async def initialize(self):
-        """Initialize the bot (non-blocking)"""
+        """Initialize the bot (non-blocking)."""
         await self.application.initialize()
         await self.application.start()
 
     async def shutdown(self):
-        """Shutdown the bot"""
+        """Shutdown the bot."""
         await self.application.stop()
         await self.application.shutdown()

@@ -1,5 +1,5 @@
 """
-Messaging Layer - Platform Integration & Message Mapping
+Messaging module - Message mapping and chain tracking
 """
 
 from .message_mapping_service import MessageMappingService

@@ -3,6 +3,18 @@
     "version": "1.0.0",
     "bot_name": "TradingBot"
   },
+  "execution_map": {
+    "trade_setup": "create_trade",
+    "partial_close_specific": "partial_close",
+    "trade_close_specific": "full_close",
+    "trail_update_specific": "update_stop",
+    "pyramid_add": "pyramid_add",
+    "cancel_trade": "cancel_trade",
+    "target_hit": "target_hit",
+    "stopped_out": "stopped_out",
+    "breakeven_trigger": "breakeven_trigger",
+    "note_add": "note_add"
+  },
   "message_types": {
     "trade_setup": {
       "description": "Trade setup from OCR",
@@ -52,6 +64,72 @@
         "telegram": "🔁 TRAILING STOP\n• New Stop: {new_stop}",
         "twitter": "🔁 TRAILING\nStop: {new_stop}"
       }
+    },
+    "target_hit": {
+      "description": "Target hit",
+      "platform_rules": {
+        "telegram": true,
+        "twitter": true
+      },
+      "formatting": {
+        "telegram": "🎯 TARGET HIT\n• PnL: {pnl}\n• Remaining: {remaining}%",
+        "twitter": "🎯 TARGET HIT\nPnL: {pnl}"
+      }
+    },
+    "stopped_out": {
+      "description": "Stopped out",
+      "platform_rules": {
+        "telegram": true,
+        "twitter": true
+      },
+      "formatting": {
+        "telegram": "🛑 STOPPED OUT\n• PnL: {pnl}",
+        "twitter": "🛑 STOPPED OUT\nPnL: {pnl}"
+      }
+    },
+    "breakeven_trigger": {
+      "description": "Breakeven triggered",
+      "platform_rules": {
+        "telegram": true,
+        "twitter": true
+      },
+      "formatting": {
+        "telegram": "⚖️ BREAKEVEN\n• Stop moved to entry",
+        "twitter": "⚖️ BREAKEVEN\nStop moved to entry"
+      }
+    },
+    "cancelled": {
+      "description": "Trade cancelled",
+      "platform_rules": {
+        "telegram": true,
+        "twitter": true
+      },
+      "formatting": {
+        "telegram": "❌ CANCELLED\n• Reason: {reason}",
+        "twitter": "❌ CANCELLED\nReason: {reason}"
+      }
+    },
+    "pyramid_add": {
+      "description": "Pyramid entry added",
+      "platform_rules": {
+        "telegram": true,
+        "twitter": true
+      },
+      "formatting": {
+        "telegram": "📈 PYRAMID ADD\n• Entry: {entry_price}\n• Size: {size}",
+        "twitter": "📈 PYRAMID ADD\nEntry: {entry_price}"
+      }
+    },
+    "note_add": {
+      "description": "Note added to trade",
+      "platform_rules": {
+        "telegram": true,
+        "twitter": false
+      },
+      "formatting": {
+        "telegram": "📝 NOTE\n{note_text}",
+        "twitter": ""
+      }
     }
   },
   "command_processing": {
@@ -83,6 +161,21 @@
           "requires_price": true,
           "percentage": "50",
           "update_type": "CLOSEHALF"
+        },
+        "PYRAMID": {
+          "type": "pyramid_add",
+          "requires_price": true,
+          "update_type": "PYRAMID"
+        },
+        "CANCEL": {
+          "type": "cancelled",
+          "requires_price": false,
+          "update_type": "CANCEL"
+        },
+        "NOTE": {
+          "type": "note_add",
+          "requires_price": false,
+          "update_type": "NOTE"
         }
       },
       "parse_patterns": [
@@ -110,6 +203,21 @@
           "pattern": "closehalf\s+(\d+\.?\d*)",
           "command": "CLOSEHALF",
           "extract": ["price"]
+        },
+        {
+          "pattern": "pyramid\s+(\d+\.?\d*)",
+          "command": "PYRAMID",
+          "extract": ["price"]
+        },
+        {
+          "pattern": "cancel\s*(.*)",
+          "command": "CANCEL",
+          "extract": ["reason"]
+        },
+        {
+          "pattern": "note\s+(.*)",
+          "command": "NOTE",
+          "extract": ["note_text"]
         }
       ]
     }
