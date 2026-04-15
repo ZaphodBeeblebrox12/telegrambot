@@ -1,13 +1,15 @@
 """
-Database layer - SQLAlchemy models
+Database layer - SQLAlchemy models (PRODUCTION VERSION)
+Drop-in replacement for core/db.py
 """
 from sqlalchemy import (
     create_engine, Column, Integer, String, DateTime,
-    Numeric, ForeignKey, Text
+    Numeric, ForeignKey, Text, JSON
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
+import os
 
 Base = declarative_base()
 
@@ -20,6 +22,8 @@ class TradeModel(Base):
     side = Column(String(10), nullable=False)
     asset_class = Column(String(20), nullable=False)
     status = Column(String(20), nullable=False, default="open")
+    target = Column(Numeric(20, 8))
+    stop_loss = Column(Numeric(20, 8))
     created_at = Column(DateTime, default=datetime.utcnow)
 
     entries = relationship("TradeEntryModel", back_populates="trade", cascade="all, delete-orphan")
@@ -73,7 +77,7 @@ class MessageMappingModel(Base):
 
     id = Column(Integer, primary_key=True)
     trade_id = Column(Integer, ForeignKey("trades.id"), nullable=False, index=True)
-    platform = Column(String(50), nullable=False, index=True)
+    platform = Column(String(50), nullable=False)
     message_id = Column(String(100), nullable=False, index=True)
     channel_id = Column(String(100))
     message_type = Column(String(50), nullable=False)
@@ -89,7 +93,7 @@ class OutboxMessageModel(Base):
 
     id = Column(Integer, primary_key=True)
     message_id = Column(String(50), unique=True, nullable=False, index=True)
-    destination = Column(String(50), nullable=False, index=True)
+    destination = Column(String(50), nullable=False)
     channel_id = Column(String(100))
     message_type = Column(String(50), nullable=False)
     payload = Column(Text, nullable=False)
@@ -101,10 +105,30 @@ class OutboxMessageModel(Base):
     error = Column(Text)
 
 class Database:
-    def __init__(self, connection_string: str = "sqlite:///trading_bot.db"):
-        self.engine = create_engine(connection_string)
+    def __init__(self, connection_string: str = None):
+        # Support env var or default to sqlite
+        if connection_string is None:
+            connection_string = os.getenv(
+                "DATABASE_URL",
+                os.getenv("DB_CONNECTION", "sqlite:///trading_bot.db")
+            )
+
+        self.engine = create_engine(
+            connection_string,
+            pool_pre_ping=True,
+            pool_recycle=3600
+        )
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
 
     def get_session(self):
         return self.Session()
+
+# Backward compatibility - keep existing interface
+_get_db = None
+
+def get_db():
+    global _get_db
+    if _get_db is None:
+        _get_db = Database()
+    return _get_db

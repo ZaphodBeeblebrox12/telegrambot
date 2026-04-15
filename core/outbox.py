@@ -1,4 +1,8 @@
-"""Outbox Pattern for Reliable Async Processing - SQL-based with Transaction Support"""
+"""Outbox Pattern for Reliable Async Processing - SQL-based with Transaction Support + Twitter Controls
+
+FIXED: Twitter filtering now happens at ENQUEUE time, not process time.
+This prevents wasted processing on filtered messages.
+"""
 import json
 import asyncio
 import uuid
@@ -9,6 +13,8 @@ from enum import Enum
 
 from sqlalchemy.orm import Session
 from core.db import Database, OutboxMessageModel
+from core.twitter_toggle_manager import is_twitter_enabled
+from core.twitter_style_manager import should_post_to_twitter
 
 class OutboxStatus(Enum):
     PENDING = "pending"
@@ -31,11 +37,35 @@ class OutboxMessage:
     processed_at: Optional[float] = None
     error: Optional[str] = None
 
+
 class TransactionalOutbox:
     """Transactional outbox that participates in DB transactions (FIX 3)"""
 
     def __init__(self, db: Optional[Database] = None):
         self.db = db or Database()
+
+    def _should_skip_twitter_enqueue(self, destination: str, message_type: str) -> bool:
+        """
+        Check if Twitter message should be skipped BEFORE enqueuing.
+        Returns True if message should NOT be enqueued.
+
+        FIXED: This is now called at ENQUEUE time, not process time.
+        """
+        if destination != "twitter":
+            return False
+
+        # Check global Twitter toggle
+        if not is_twitter_enabled():
+            print(f"[TWITTER] Skipping enqueue for {message_type}: Twitter disabled")
+            return True
+
+        # Check event type filter
+        event_type = message_type or "position_update"
+        if not should_post_to_twitter(event_type):
+            print(f"[TWITTER] Skipping enqueue for {event_type}: not in allowed list")
+            return True
+
+        return False
 
     def enqueue_in_transaction(
         self,
@@ -44,11 +74,18 @@ class TransactionalOutbox:
         message_type: str,
         payload: Dict[str, Any],
         channel_id: Optional[str] = None
-    ) -> str:
+    ) -> Optional[str]:
         """
         Enqueue message within an existing transaction.
         CRITICAL: Uses provided session for transactional consistency.
+
+        FIXED: Returns None if message is filtered out (Twitter checks).
+        This prevents wasted processing on filtered messages.
         """
+        # TWITTER FILTERING AT ENQUEUE TIME (before DB write)
+        if self._should_skip_twitter_enqueue(destination, message_type):
+            return None  # Signal that message was filtered out
+
         msg_id = str(uuid.uuid4())[:8]
 
         msg_model = OutboxMessageModel(
@@ -94,8 +131,9 @@ class TransactionalOutbox:
             if status == "completed":
                 msg.processed_at = datetime.utcnow()
 
+
 class AsyncProcessor:
-    """Async message processor with retry"""
+    """Async message processor with retry (Twitter filtering now in enqueue)"""
 
     def __init__(self, max_retries: int = 3):
         self.max_retries = max_retries
@@ -108,6 +146,10 @@ class AsyncProcessor:
         self,
         message: OutboxMessageModel
     ) -> bool:
+        """
+        Process message with retry.
+        Note: Twitter filtering now happens at enqueue time, not here.
+        """
         handler = self.handlers.get(message.destination)
         if not handler:
             message.error = f"No handler for destination: {message.destination}"
@@ -140,8 +182,9 @@ class AsyncProcessor:
 
         return False
 
+
 class OutboxManager:
-    """Main outbox manager with transactional support (FIX 3)"""
+    """Main outbox manager with transactional support (FIX 3) + Twitter controls at enqueue"""
 
     def __init__(self):
         self.db = Database()
@@ -159,8 +202,13 @@ class OutboxManager:
         message_type: str,
         payload: Dict[str, Any],
         channel_id: Optional[str] = None
-    ) -> str:
-        """Enqueue within existing transaction (FIX 3)"""
+    ) -> Optional[str]:
+        """
+        Enqueue within existing transaction (FIX 3).
+
+        FIXED: Returns None if message was filtered out (e.g., by Twitter settings).
+        Caller should check for None and handle appropriately.
+        """
         return self.outbox.enqueue_in_transaction(
             session, destination, message_type, payload, channel_id
         )
@@ -174,7 +222,7 @@ class OutboxManager:
             for msg_model in pending:
                 success = await self.processor.process_with_retry(msg_model)
                 self.outbox.mark_processed(
-                    session, msg_model.message_id, 
+                    session, msg_model.message_id,
                     msg_model.status, msg_model.error
                 )
                 session.commit()
@@ -201,6 +249,7 @@ class OutboxManager:
 
     async def run_once(self):
         await self.process_pending()
+
 
 _outbox: Optional[OutboxManager] = None
 

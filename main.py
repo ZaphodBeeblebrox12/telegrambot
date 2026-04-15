@@ -51,5 +51,11 @@ def main():
     print("System ready.")
     print("=" * 60)
 
+    # ADD THIS - Start the bot
+    print("\n🚀 Starting Telegram bot...")
+    from bot.telegram_bot import TradingBot
+    bot = TradingBot()
+    bot.run()  # This blocks and keeps the bot running
+
 if __name__ == "__main__":
     main()
