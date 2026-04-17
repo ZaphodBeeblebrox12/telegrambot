@@ -3,11 +3,15 @@ Receives messages, processes through orchestrator. Uses python-telegram-bot v20+
 Pipeline: CONFIG → ROUTER → EXECUTOR → SERVICE → FORMATTER → MAPPING → OUTBOX → PUBLISHER
 FIXED: Rate limiting now at TOP of handler, preserves exact original flow.
 FIXED: Safe message access (effective_message) for channel posts.
-FIXED: Outbox handler registered. """
+FIXED: Outbox handler registered.
+FIXED: Admin caption editing, image forwarding, target message ID tracking, reply threading.
+"""
 
 import logging
 import os
 import asyncio
+import uuid
+from pathlib import Path
 from typing import Optional
 
 from telegram import Update, ReplyParameters
@@ -28,6 +32,9 @@ from core.outbox import get_outbox
 
 logger = logging.getLogger(__name__)
 
+TEMP_IMAGE_DIR = Path("temp_images")
+TEMP_IMAGE_DIR.mkdir(exist_ok=True)
+
 class TradingBot:
     """Telegram bot for trading signal processing - fully config-driven with outbox."""
 
@@ -47,7 +54,7 @@ class TradingBot:
         self._setup_handlers()
         self._setup_outbox_handler()
 
-        logger.info("TradingBot initialized (config-driven v2.0 with outbox + rate limiting)")
+        logger.info("TradingBot initialized (config-driven v2.0 with outbox + rate limiting + image flow)")
 
     def _setup_handlers(self):
         """Setup message handlers – also handle channel posts."""
@@ -74,34 +81,74 @@ class TradingBot:
         outbox.register_handler("telegram", self._outbox_telegram_handler)
 
     async def _outbox_telegram_handler(self, payload: dict):
-        """Outbox handler that actually sends messages via the bot."""
+        """Outbox handler that actually sends messages and photos via the bot.
+
+        CRITICAL FIX: Now handles photo_path for image forwarding and stores
+        target message IDs for reply threading using trade_id.
+        """
         channel_id = payload.get("channel_id")
         text = payload.get("text")
         reply_to = payload.get("reply_to_message_id")
+        photo_path = payload.get("photo_path")
+        trade_id = payload.get("trade_id")
 
         if not channel_id or not text:
             logger.error("Outbox payload missing channel_id or text")
             return
 
         try:
-            await self.application.bot.send_message(
-                chat_id=channel_id,
-                text=text,
-                reply_to_message_id=reply_to,
-                parse_mode="HTML",
-            )
+            if photo_path and os.path.exists(photo_path):
+                with open(photo_path, 'rb') as photo_file:
+                    sent = await self.application.bot.send_photo(
+                        chat_id=channel_id,
+                        photo=photo_file,
+                        caption=text,
+                        reply_to_message_id=reply_to,
+                        parse_mode="HTML",
+                    )
+            else:
+                sent = await self.application.bot.send_message(
+                    chat_id=channel_id,
+                    text=text,
+                    reply_to_message_id=reply_to,
+                    parse_mode="HTML",
+                )
+
+            # CRITICAL FIX: Store target message ID for reply threading using trade_id
+            if trade_id and sent and hasattr(sent, 'message_id'):
+                try:
+                    self.mapping_service.add_target_message(trade_id, channel_id, sent.message_id)
+                except Exception as e:
+                    logger.warning(f"Failed to store target message ID: {e}")
+
         except Exception as e:
             error_str = str(e).lower()
             # Fallback to plain text if HTML parsing fails
             if "can't parse" in error_str or "html" in error_str:
                 logger.warning(f"HTML parse failed, retrying as plain text: {e}")
                 try:
-                    await self.application.bot.send_message(
-                        chat_id=channel_id,
-                        text=text,
-                        reply_to_message_id=reply_to,
-                        parse_mode=None,
-                    )
+                    if photo_path and os.path.exists(photo_path):
+                        with open(photo_path, 'rb') as photo_file:
+                            sent = await self.application.bot.send_photo(
+                                chat_id=channel_id,
+                                photo=photo_file,
+                                caption=text,
+                                reply_to_message_id=reply_to,
+                                parse_mode=None,
+                            )
+                    else:
+                        sent = await self.application.bot.send_message(
+                            chat_id=channel_id,
+                            text=text,
+                            reply_to_message_id=reply_to,
+                            parse_mode=None,
+                        )
+
+                    if trade_id and sent and hasattr(sent, 'message_id'):
+                        try:
+                            self.mapping_service.add_target_message(trade_id, channel_id, sent.message_id)
+                        except Exception as e2:
+                            logger.warning(f"Failed to store target message ID on fallback: {e2}")
                     return
                 except Exception as e2:
                     logger.exception(f"Plain text fallback also failed: {e2}")
@@ -158,7 +205,13 @@ class TradingBot:
         )
 
     async def _handle_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle incoming chart images."""
+        """Handle incoming chart images.
+
+        CRITICAL FIXES:
+        1. Saves image to temp file for forwarding pipeline
+        2. Edits admin message caption with formatted signal (old bot behavior)
+        3. Routes image+command to update handler with photo_path
+        """
         msg = update.effective_message
         if not msg:
             return
@@ -175,43 +228,100 @@ class TradingBot:
         photo_file = await msg.photo[-1].get_file()
         image_bytes = await photo_file.download_as_bytearray()
 
+        # CRITICAL FIX: Save image to temp file for forwarding pipeline
+        photo_path = None
         try:
-            # FIXED: Use async OCR to avoid blocking event loop
+            photo_path = TEMP_IMAGE_DIR / f"{msg.message_id}_{uuid.uuid4().hex[:8]}.jpg"
+            with open(photo_path, 'wb') as f:
+                f.write(image_bytes)
+            logger.info(f"Saved temp image: {photo_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save temp image: {e}")
+            photo_path = None
+
+        # Check if this is an update command on an image (e.g., image with /update caption)
+        caption = msg.caption or ""
+        is_update_command = (
+            msg.reply_to_message is not None or 
+            '/update' in caption.lower() or
+            'update ' in caption.lower() or
+            'trail ' in caption.lower() or
+            'closed ' in caption.lower() or
+            'target ' in caption.lower() or
+            'stopped ' in caption.lower() or
+            'breakeven' in caption.lower() or
+            'partial ' in caption.lower() or
+            'closehalf ' in caption.lower() or
+            'cancel' in caption.lower() or
+            'note ' in caption.lower() or
+            'newtarget ' in caption.lower() or
+            'stop ' in caption.lower() or
+            'pyramid ' in caption.lower()
+        )
+
+        if is_update_command:
+            logger.info(f"Update command detected in image caption. Routing with photo_path.")
+            # Route to text handler with photo path for forwarding
+            await self._handle_text(update, context, photo_path=str(photo_path) if photo_path else None)
+            return
+
+        try:
+            # Process trade setup
             result = await self.orchestrator.process_image(
                 image_bytes=bytes(image_bytes),
                 admin_channel_id=msg.chat_id,
                 message_id=msg.message_id,
+                photo_path=str(photo_path) if photo_path else None
             )
 
             if not result.get("success"):
-                # errors are stored in a list
                 errors = result.get("errors", [])
                 error = errors[0] if errors else "Unknown error"
                 await msg.reply_text(f"❌ OCR failed: {error}")
                 return
 
-            # Record rate limit
+            # CRITICAL FIX: Edit admin message caption with formatted trade signal
+            formatted_text = result.get("formatted_text")
+            if formatted_text:
+                try:
+                    await context.bot.edit_message_caption(
+                        chat_id=msg.chat_id,
+                        message_id=msg.message_id,
+                        caption=formatted_text,
+                        parse_mode="HTML"
+                    )
+                    logger.info(f"Edited admin message {msg.message_id} caption with trade setup")
+                except Exception as e:
+                    logger.warning(f"Could not edit admin caption: {e}")
+
             self.rate_limiter.record_global_send()
 
-            # Send success confirmation to admin
             trade = result.get("trade")
             if trade:
                 await msg.reply_text(
                     f"✅ Trade created: {trade.symbol} {trade.side}\n"
                     f"Entry: {trade.entry_price} | Target: {trade.target} | Stop: {trade.stop_loss}"
                 )
-            logger.info(f"Trade created from image: {result.get('trade')}")
+                logger.info(f"Trade created from image: {trade.symbol}")
 
         except Exception as e:
             logger.exception("Error processing image")
             await msg.reply_text(f"❌ Error: {str(e)}")
 
-    async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle incoming text messages (commands)."""
+    async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE, photo_path: str = None):
+        """Handle incoming text messages (commands).
+
+        FIX: Accepts optional photo_path for image+command forwarding.
+        """
         msg = update.effective_message
         if not msg:
             return
-        text = msg.text.strip()
+        text = msg.text.strip() if msg.text else ""
+
+        # If routed from image handler, use caption as text
+        if not text and msg.caption:
+            text = msg.caption.strip()
+
         reply_to = msg.reply_to_message
 
         if not reply_to:
@@ -222,7 +332,7 @@ class TradingBot:
             return
 
         await self._process_command(
-            update, context, command_text=text, reply_to_msg_id=reply_to.message_id
+            update, context, command_text=text, reply_to_msg_id=reply_to.message_id, photo_path=photo_path
         )
 
     async def _process_command(
@@ -231,8 +341,15 @@ class TradingBot:
         context: ContextTypes.DEFAULT_TYPE,
         command_text: str,
         reply_to_msg_id: int,
+        photo_path: str = None,
     ):
-        """Process command through orchestrator with outbox and rate limiting."""
+        """Process command through orchestrator with outbox and rate limiting.
+
+        CRITICAL FIXES:
+        1. Accepts photo_path for image+command forwarding
+        2. Edits image caption for image updates (old bot behavior)
+        3. Properly handles result from orchestrator
+        """
         msg = update.effective_message
         if not msg:
             return
@@ -274,24 +391,38 @@ class TradingBot:
                 command_text=command_text,
                 reply_to_message_id=reply_to_msg_id,
                 admin_channel_id=msg.chat_id,
+                photo_path=photo_path,
+                is_image_update=msg.photo is not None
             )
 
-            if not result["success"]:
-                error_msg = result["errors"][0] if result["errors"] else "Command failed"
+            if not result or not result.get("success"):
+                error_msg = result["errors"][0] if result and result.get("errors") else "Command failed"
                 await msg.reply_text(f"❌ {error_msg}")
                 return
 
-            # Record successful operations AFTER success
+            # CRITICAL FIX: For image updates, edit the caption instead of sending text reply
+            if msg.photo and result.get("formatted_text"):
+                try:
+                    await context.bot.edit_message_caption(
+                        chat_id=msg.chat_id,
+                        message_id=msg.message_id,
+                        caption=result["formatted_text"],
+                        parse_mode="HTML"
+                    )
+                    logger.info(f"Edited update image caption for msg {msg.message_id}")
+                except Exception as e:
+                    logger.warning(f"Could not edit update image caption: {e}")
+            else:
+                # For text-only updates, outbox already sent admin reply.
+                # Do NOT send duplicate confirmation.
+                pass
+
             self.rate_limiter.record_trade_update(trade_id, command_text)
             self.rate_limiter.record_global_send()
 
-            # FIXED: Outbox already sent the response via run_once().
-            # Do NOT send duplicate direct reply.
-            # Previous code had: await msg.reply_text(...) here which caused double-sending.
-
-            # Delete command if configured
+            # Delete command if configured (ONLY for text commands, preserve image updates)
             cmd_config = config.commands.get("/update")
-            if cmd_config and cmd_config.delete_command:
+            if cmd_config and cmd_config.delete_command and not msg.photo:
                 try:
                     await msg.delete()
                 except Exception:

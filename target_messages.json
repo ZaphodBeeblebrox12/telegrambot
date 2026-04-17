@@ -1,0 +1,21 @@
+{
+  "by_trade": {
+    "GOLDSPOTUSDOLLAR-20260418-02": [
+      {
+        "channel_id": -1002458855204,
+        "message_id": 2482,
+        "timestamp": 1776454155.5752058
+      },
+      {
+        "channel_id": -1001648497395,
+        "message_id": 6529,
+        "timestamp": 1776454156.3149242
+      },
+      {
+        "channel_id": -1001648497395,
+        "message_id": 6530,
+        "timestamp": 1776454157.3993988
+      }
+    ]
+  }
+}
