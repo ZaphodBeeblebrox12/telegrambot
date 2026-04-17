@@ -13,7 +13,6 @@ from core.models import OCRResult
 
 logger = logging.getLogger(__name__)
 
-
 class GeminiOCRService:
     """OCR service using Google's Gemini API"""
 
@@ -78,7 +77,11 @@ class GeminiOCRService:
                 logger.debug(f"Using API key {self.current_key_index+1}/{len(self.api_keys)}")
                 response = model.generate_content(
                     [prompt, image_part],
-                    generation_config={"temperature": 0.1, "max_output_tokens": 1024},
+                    generation_config={
+                    "temperature": 0.1,
+                    "max_output_tokens": 1024,
+                    "response_mime_type": "application/json"
+                },
                     request_options={"timeout": self.timeout}
                 )
                 logger.debug(f"Gemini raw response received, length: {len(response.text)}")
@@ -229,9 +232,7 @@ class GeminiOCRService:
         cfg = config.leverage_settings
         return cfg.get("multipliers", {}).get(asset_class, 1)
 
-
 _ocr_service = None
-
 
 def get_ocr_service():
     global _ocr_service

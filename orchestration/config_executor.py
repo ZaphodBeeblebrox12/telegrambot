@@ -9,6 +9,7 @@ Drop-in replacement with:
 from typing import Dict, Any, Optional, Callable, List
 from dataclasses import dataclass
 from decimal import Decimal
+from datetime import datetime
 import hashlib
 import json
 import logging
@@ -103,7 +104,7 @@ class ConfigExecutor:
         return {
             "status": trade.status,
             "entries": [
-                {"seq": e.sequence, "price": float(e.entry_price), 
+                {"seq": e.sequence, "price": float(e.entry_price),
                  "size": float(e.size), "closed": float(e.closed_size)}
                 for e in entries
             ],
@@ -160,8 +161,8 @@ class ConfigExecutor:
             )
             session.add(snapshot)
 
-    def _record_event(self, session, trade_db_id: int, event_type: str, 
-                      payload: Dict, idempotency_key: str, 
+    def _record_event(self, session, trade_db_id: int, event_type: str,
+                      payload: Dict, idempotency_key: str,
                       before_state: Dict, after_state: Dict):
         """Record event with audit trail"""
         audit_payload = {
@@ -181,7 +182,6 @@ class ConfigExecutor:
 
     async def execute(self, trade: Trade, parsed: ParsedCommand) -> ExecutionResult:
         """Execute parsed command with full transaction safety"""
-        from datetime import datetime
 
         handler = self.handlers.get(parsed.subcommand)
 
@@ -257,14 +257,14 @@ class ConfigExecutor:
             if result.success:
                 self._rebuild_snapshot(session, trade_db_id)
 
-                # Capture after state
-                after_state = self._capture_state(session, trade_db_id)
+            # Capture after state
+            after_state = self._capture_state(session, trade_db_id)
 
-                # Record event with audit
-                self._record_event(
-                    session, trade_db_id, parsed.subcommand,
-                    payload, idempotency_key, before_state, after_state
-                )
+            # Record event with audit
+            self._record_event(
+                session, trade_db_id, parsed.subcommand,
+                payload, idempotency_key, before_state, after_state
+            )
 
             session.commit()
             return result
@@ -307,7 +307,7 @@ class ConfigExecutor:
     # ===== HANDLERS =====
 
     async def _handle_trail(self, session, trade: Trade, trade_db_id: int,
-                           parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                            parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         if not parsed.price:
             return ExecutionResult(
                 success=False, trade=trade, message_type=None,
@@ -333,7 +333,7 @@ class ConfigExecutor:
         )
 
     async def _handle_partial(self, session, trade: Trade, trade_db_id: int,
-                             parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                              parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         from core.fifo_engine import FIFOEngine
 
         if not parsed.price:
@@ -389,12 +389,12 @@ class ConfigExecutor:
         )
 
     async def _handle_closehalf(self, session, trade: Trade, trade_db_id: int,
-                               parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                                parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         parsed.percentage = 50.0
         return await self._handle_partial(session, trade, trade_db_id, parsed, side, stop_loss)
 
     async def _handle_closed(self, session, trade: Trade, trade_db_id: int,
-                            parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                             parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         from core.fifo_engine import FIFOEngine
 
         if not parsed.price:
@@ -425,7 +425,10 @@ class ConfigExecutor:
         entry_price = float(snapshot.weighted_avg_entry) if snapshot else parsed.price
 
         if entry_price > 0:
-            price_change = ((parsed.price - entry_price) / entry_price) * 100
+            if side == 'LONG':
+                price_change = ((parsed.price - entry_price) / entry_price) * 100
+            else:
+                price_change = ((entry_price - parsed.price) / entry_price) * 100
             position_return = price_change * trade.leverage_multiplier
         else:
             price_change = 0
@@ -448,7 +451,7 @@ class ConfigExecutor:
         )
 
     async def _handle_target(self, session, trade: Trade, trade_db_id: int,
-                            parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                             parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         result = await self._handle_closed(session, trade, trade_db_id, parsed, side, stop_loss)
         if result.success:
             result.message_type = 'target_hit_specific'
@@ -456,7 +459,7 @@ class ConfigExecutor:
         return result
 
     async def _handle_stopped(self, session, trade: Trade, trade_db_id: int,
-                             parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                              parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         result = await self._handle_closed(session, trade, trade_db_id, parsed, side, stop_loss)
         if result.success:
             result.message_type = 'stopped_out_specific'
@@ -464,7 +467,7 @@ class ConfigExecutor:
         return result
 
     async def _handle_breakeven(self, session, trade: Trade, trade_db_id: int,
-                               parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                                parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         snapshot = session.execute(
             select(TradeSnapshotModel).where(TradeSnapshotModel.trade_id == trade_db_id)
         ).scalar_one_or_none()
@@ -481,11 +484,11 @@ class ConfigExecutor:
         return result
 
     async def _handle_update_stop(self, session, trade: Trade, trade_db_id: int,
-                                 parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                                  parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         return await self._handle_trail(session, trade, trade_db_id, parsed, side, stop_loss)
 
     async def _handle_update_target(self, session, trade: Trade, trade_db_id: int,
-                                   parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                                    parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         if not parsed.price:
             return ExecutionResult(
                 success=False, trade=trade, message_type=None,
@@ -510,7 +513,7 @@ class ConfigExecutor:
         )
 
     async def _handle_note(self, session, trade: Trade, trade_db_id: int,
-                          parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                           parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         return ExecutionResult(
             success=True,
             trade=trade,
@@ -524,7 +527,7 @@ class ConfigExecutor:
         )
 
     async def _handle_cancelled(self, session, trade: Trade, trade_db_id: int,
-                               parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                                parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         session.execute(
             update(TradeModel).where(TradeModel.id == trade_db_id)
             .values(status='CANCELLED')
@@ -543,7 +546,7 @@ class ConfigExecutor:
         )
 
     async def _handle_not_triggered(self, session, trade: Trade, trade_db_id: int,
-                                   parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                                    parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         session.execute(
             update(TradeModel).where(TradeModel.id == trade_db_id)
             .values(status='NOT_TRIGGERED')
@@ -562,7 +565,7 @@ class ConfigExecutor:
         )
 
     async def _handle_pyramid(self, session, trade: Trade, trade_db_id: int,
-                             parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                              parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         if not parsed.price:
             return ExecutionResult(
                 success=False, trade=trade, message_type=None,

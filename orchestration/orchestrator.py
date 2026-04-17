@@ -1,6 +1,7 @@
 """Main Orchestrator - Config-driven pipeline with Transactional Outbox"""
 from typing import Optional, Dict, Any, List
 import asyncio
+import logging
 
 from config.config_loader import config
 from core.models import OCRResult, ParsedCommand, Trade, MessageMapping
@@ -12,6 +13,8 @@ from orchestration.command_router import get_command_router
 from orchestration.config_executor import get_executor
 from orchestration.formatter import get_formatter
 from messaging.message_mapping_service import get_mapping_service
+
+logger = logging.getLogger(__name__)
 
 class TradingBotOrchestrator:
     """Main orchestrator with Transactional Outbox"""
@@ -44,8 +47,8 @@ class TradingBotOrchestrator:
 
         session = self.db.get_session()
         try:
-            # 1. OCR Processing
-            ocr_result = self.ocr.process_image(image_bytes)
+            # 1. OCR Processing (async-safe)
+            ocr_result = await self.ocr.process_image_async(image_bytes)
             result['ocr_result'] = ocr_result
 
             if not ocr_result.is_valid:
@@ -89,23 +92,28 @@ class TradingBotOrchestrator:
                             message_type='trade_setup',
                             payload={
                                 'channel_id': dest['channel_id'],
-                                'text': tg_text,
-                                'photo': image_bytes
+                                'text': tg_text
+                                # REMOVED: photo bytes (not JSON serializable)
                             }
                         )
-                        result['outbox_ids'].append({'platform': 'telegram', 'id': outbox_id})
+                        if outbox_id:
+                            result['outbox_ids'].append({'platform': 'telegram', 'id': outbox_id})
 
-            # 4. Create message mapping
-            mapping = self.mapping_service.create_mapping(
-                main_msg_id=message_id,
-                tg_channel=admin_channel_id,
-                trade_id=trade.trade_id,
-                ocr_symbol=trade.symbol,
-                asset_class=trade.asset_class,
-                leverage_multiplier=trade.leverage_multiplier
-            )
+            # 4. Create message mapping (separate tx - don't let it break main tx)
+            try:
+                mapping = self.mapping_service.create_mapping(
+                    main_msg_id=message_id,
+                    tg_channel=admin_channel_id,
+                    trade_id=trade.trade_id,
+                    ocr_symbol=trade.symbol,
+                    asset_class=trade.asset_class,
+                    leverage_multiplier=trade.leverage_multiplier
+                )
+                result['mapping'] = mapping
+            except Exception as e:
+                logger.error(f"Message mapping creation failed: {e}")
+                result['errors'].append(f"Mapping failed: {e}")
 
-            result['mapping'] = mapping
             result['success'] = True
 
             # 5. COMMIT TRANSACTION (atomic: trade + outbox messages)
@@ -191,7 +199,8 @@ class TradingBotOrchestrator:
                     'reply_to_message_id': reply_to_message_id
                 }
             )
-            result['outbox_ids'].append({'platform': 'telegram', 'id': outbox_id})
+            if outbox_id:
+                result['outbox_ids'].append({'platform': 'telegram', 'id': outbox_id})
 
             result['success'] = True
             session.commit()

@@ -28,7 +28,6 @@ from core.outbox import get_outbox
 
 logger = logging.getLogger(__name__)
 
-
 class TradingBot:
     """Telegram bot for trading signal processing - fully config-driven with outbox."""
 
@@ -92,6 +91,21 @@ class TradingBot:
                 parse_mode="HTML",
             )
         except Exception as e:
+            error_str = str(e).lower()
+            # Fallback to plain text if HTML parsing fails
+            if "can't parse" in error_str or "html" in error_str:
+                logger.warning(f"HTML parse failed, retrying as plain text: {e}")
+                try:
+                    await self.application.bot.send_message(
+                        chat_id=channel_id,
+                        text=text,
+                        reply_to_message_id=reply_to,
+                        parse_mode=None,
+                    )
+                    return
+                except Exception as e2:
+                    logger.exception(f"Plain text fallback also failed: {e2}")
+                    raise
             logger.exception(f"Outbox send failed: {e}")
             raise
 
@@ -118,15 +132,15 @@ class TradingBot:
             f"📚 Config-Driven Trading Bot v{config.system.version}\n\n"
             f"Handlers: {', '.join(handlers[:8])}...\n\n"
             "Reply to any trade message with:\n"
-            "• trail  - Update trailing stop\n"
-            "• closed  - Close trade\n"
-            "• target  - Target hit\n"
-            "• stopped  - Stopped out\n"
+            "• trail - Update trailing stop\n"
+            "• closed - Close trade\n"
+            "• target - Target hit\n"
+            "• stopped - Stopped out\n"
             "• breakeven - Close at breakeven\n"
-            "• partial  [%] - Partial close (FIFO)\n"
-            "• closehalf  - Close 50% (FIFO)\n"
-            "• pyramid  [%] - Add to position\n"
-            "• note  - Add note\n"
+            "• partial [%] - Partial close (FIFO)\n"
+            "• closehalf - Close 50% (FIFO)\n"
+            "• pyramid [%] - Add to position\n"
+            "• note - Add note\n"
             "• cancel [reason] - Cancel trade"
         )
 
@@ -162,7 +176,7 @@ class TradingBot:
         image_bytes = await photo_file.download_as_bytearray()
 
         try:
-            # CORRECTED: orchestrator method is process_image
+            # FIXED: Use async OCR to avoid blocking event loop
             result = await self.orchestrator.process_image(
                 image_bytes=bytes(image_bytes),
                 admin_channel_id=msg.chat_id,
@@ -179,7 +193,13 @@ class TradingBot:
             # Record rate limit
             self.rate_limiter.record_global_send()
 
-            # Send formatted response via outbox (already handled by orchestrator)
+            # Send success confirmation to admin
+            trade = result.get("trade")
+            if trade:
+                await msg.reply_text(
+                    f"✅ Trade created: {trade.symbol} {trade.side}\n"
+                    f"Entry: {trade.entry_price} | Target: {trade.target} | Stop: {trade.stop_loss}"
+                )
             logger.info(f"Trade created from image: {result.get('trade')}")
 
         except Exception as e:
@@ -265,13 +285,9 @@ class TradingBot:
             self.rate_limiter.record_trade_update(trade_id, command_text)
             self.rate_limiter.record_global_send()
 
-            # Get formatted message
-            tg_text = result["formatted"].get("telegram", "Update processed")
-
-            # Send response
-            await msg.reply_text(
-                tg_text, reply_parameters=ReplyParameters(message_id=reply_to_msg_id)
-            )
+            # FIXED: Outbox already sent the response via run_once().
+            # Do NOT send duplicate direct reply.
+            # Previous code had: await msg.reply_text(...) here which caused double-sending.
 
             # Delete command if configured
             cmd_config = config.commands.get("/update")

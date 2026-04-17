@@ -6,6 +6,7 @@ This prevents wasted processing on filtered messages.
 import json
 import asyncio
 import uuid
+import logging
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -15,6 +16,8 @@ from sqlalchemy.orm import Session
 from core.db import Database, OutboxMessageModel
 from core.twitter_toggle_manager import is_twitter_enabled
 from core.twitter_style_manager import should_post_to_twitter
+
+logger = logging.getLogger(__name__)
 
 class OutboxStatus(Enum):
     PENDING = "pending"
@@ -36,7 +39,6 @@ class OutboxMessage:
     created_at: float = field(default_factory=lambda: datetime.now().timestamp())
     processed_at: Optional[float] = None
     error: Optional[str] = None
-
 
 class TransactionalOutbox:
     """Transactional outbox that participates in DB transactions (FIX 3)"""
@@ -86,6 +88,13 @@ class TransactionalOutbox:
         if self._should_skip_twitter_enqueue(destination, message_type):
             return None  # Signal that message was filtered out
 
+        # JSON SAFETY: Verify payload is serializable before writing to DB
+        try:
+            payload_json = json.dumps(payload)
+        except TypeError as e:
+            logger.error(f"Outbox payload not JSON serializable: {e}. Payload keys: {list(payload.keys())}")
+            raise ValueError(f"Outbox payload contains non-serializable data: {e}") from e
+
         msg_id = str(uuid.uuid4())[:8]
 
         msg_model = OutboxMessageModel(
@@ -93,7 +102,7 @@ class TransactionalOutbox:
             destination=destination,
             channel_id=channel_id,
             message_type=message_type,
-            payload=json.dumps(payload),
+            payload=payload_json,
             status="pending"
         )
         session.add(msg_model)
@@ -130,7 +139,6 @@ class TransactionalOutbox:
             msg.error = error
             if status == "completed":
                 msg.processed_at = datetime.utcnow()
-
 
 class AsyncProcessor:
     """Async message processor with retry (Twitter filtering now in enqueue)"""
@@ -181,7 +189,6 @@ class AsyncProcessor:
                     message.status = "failed"
 
         return False
-
 
 class OutboxManager:
     """Main outbox manager with transactional support (FIX 3) + Twitter controls at enqueue"""
@@ -241,7 +248,8 @@ class OutboxManager:
             try:
                 await self.process_pending()
             except Exception as e:
-                print(f"Outbox processor error: {e}")
+                logger.error(f"Outbox processor error: {e}")
+            # FIXED: Sleep unconditionally to prevent CPU spinning
             await asyncio.sleep(interval)
 
     def stop_processor(self):
@@ -249,7 +257,6 @@ class OutboxManager:
 
     async def run_once(self):
         await self.process_pending()
-
 
 _outbox: Optional[OutboxManager] = None
 
