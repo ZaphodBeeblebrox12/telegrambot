@@ -1,13 +1,10 @@
-"""
-Telegram Bot Integration - Fully Config-Driven with Outbox Pattern + Rate Limiting
-
-Receives messages, processes through orchestrator.
-Uses python-telegram-bot v20+ (async)
-
+""" Telegram Bot Integration - Fully Config-Driven with Outbox Pattern + Rate Limiting
+Receives messages, processes through orchestrator. Uses python-telegram-bot v20+ (async)
 Pipeline: CONFIG → ROUTER → EXECUTOR → SERVICE → FORMATTER → MAPPING → OUTBOX → PUBLISHER
-
 FIXED: Rate limiting now at TOP of handler, preserves exact original flow.
-"""
+FIXED: Safe message access (effective_message) for channel posts.
+FIXED: Outbox handler registered. """
+
 import logging
 import os
 import asyncio
@@ -19,7 +16,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     filters,
-    ContextTypes
+    ContextTypes,
 )
 
 from config.config_loader import config
@@ -27,6 +24,7 @@ from orchestration.orchestrator import get_orchestrator
 from messaging.message_mapping_service import get_mapping_service
 from core.repositories import RepositoryFactory
 from core.rate_limit_manager import get_rate_limit_manager
+from core.outbox import get_outbox
 
 logger = logging.getLogger(__name__)
 
@@ -48,24 +46,62 @@ class TradingBot:
         # Build application
         self.application = Application.builder().token(self.token).build()
         self._setup_handlers()
+        self._setup_outbox_handler()
 
         logger.info("TradingBot initialized (config-driven v2.0 with outbox + rate limiting)")
 
     def _setup_handlers(self):
-        """Setup message handlers."""
+        """Setup message handlers – also handle channel posts."""
+        # Command handlers
         self.application.add_handler(CommandHandler("start", self._cmd_start))
         self.application.add_handler(CommandHandler("help", self._cmd_help))
         self.application.add_handler(CommandHandler("status", self._cmd_status))
 
-        self.application.add_handler(MessageHandler(filters.PHOTO, self._handle_image))
-        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text))
+        # Photo handler – works for private chats, groups, AND channels
+        self.application.add_handler(
+            MessageHandler(filters.PHOTO, self._handle_image)
+        )
+
+        # Text handler – works for private chats, groups, AND channels
+        self.application.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text)
+        )
 
         self.application.add_error_handler(self._handle_error)
 
+    def _setup_outbox_handler(self):
+        """Register a real Telegram handler with the outbox manager."""
+        outbox = get_outbox()
+        outbox.register_handler("telegram", self._outbox_telegram_handler)
+
+    async def _outbox_telegram_handler(self, payload: dict):
+        """Outbox handler that actually sends messages via the bot."""
+        channel_id = payload.get("channel_id")
+        text = payload.get("text")
+        reply_to = payload.get("reply_to_message_id")
+
+        if not channel_id or not text:
+            logger.error("Outbox payload missing channel_id or text")
+            return
+
+        try:
+            await self.application.bot.send_message(
+                chat_id=channel_id,
+                text=text,
+                reply_to_message_id=reply_to,
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.exception(f"Outbox send failed: {e}")
+            raise
+
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command."""
-        await update.message.reply_text(
-            "🤖 Trading Bot Ready (Config-Driven v2.0 + Outbox)\n\n"
+        msg = update.effective_message
+        if not msg:
+            return
+        await msg.reply_text(
+            "🚀 Trading Bot Ready (Config-Driven v2.0 + Outbox)\n\n"
             "Send me a chart image to create a trade setup\n"
             "Reply to trade messages with update commands.\n\n"
             "Available: trail, closed, target, stopped,\n"
@@ -74,103 +110,99 @@ class TradingBot:
 
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command."""
+        msg = update.effective_message
+        if not msg:
+            return
         handlers = self.orchestrator.executor.list_handlers()
-        await update.message.reply_text(
-            f"🤖 Config-Driven Trading Bot v{config.system.version}\n\n"
+        await msg.reply_text(
+            f"📚 Config-Driven Trading Bot v{config.system.version}\n\n"
             f"Handlers: {', '.join(handlers[:8])}...\n\n"
             "Reply to any trade message with:\n"
-            "• trail <price> - Update trailing stop\n"
-            "• closed <price> - Close trade\n"
-            "• target <price> - Target hit\n"
-            "• stopped <price> - Stopped out\n"
+            "• trail  - Update trailing stop\n"
+            "• closed  - Close trade\n"
+            "• target  - Target hit\n"
+            "• stopped  - Stopped out\n"
             "• breakeven - Close at breakeven\n"
-            "• partial <price> [%] - Partial close (FIFO)\n"
-            "• closehalf <price> - Close 50% (FIFO)\n"
-            "• pyramid <price> [%] - Add to position\n"
-            "• note <text> - Add note\n"
+            "• partial  [%] - Partial close (FIFO)\n"
+            "• closehalf  - Close 50% (FIFO)\n"
+            "• pyramid  [%] - Add to position\n"
+            "• note  - Add note\n"
             "• cancel [reason] - Cancel trade"
         )
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command."""
+        msg = update.effective_message
+        if not msg:
+            return
         status = self.orchestrator.get_system_status()
-
-        msg = (
+        await msg.reply_text(
             f"📊 System Status\n"
             f"Version: {status['config_version']}\n"
-            f"Handlers: {len(status['handlers_registered'])}\n"
-            f"Total Trades: {status['trade_stats']['total_trades']}\n"
-            f"Open Trades: {status['trade_stats']['open_trades']}\n"
-            f"Mappings: {status['mappings_count']}\n"
-            f"Outbox Pending: {status.get('outbox_pending', 0)}"
+            f"Handlers: {', '.join(status['handlers_registered'])}\n"
+            f"Open Trades: {status['trade_stats']['open_trades']}"
         )
-        await update.message.reply_text(msg)
 
     async def _handle_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle chart image - create trade setup with outbox."""
+        """Handle incoming chart images."""
+        msg = update.effective_message
+        if not msg:
+            return
+        if not msg.photo:
+            await msg.reply_text("❌ No photo found")
+            return
+
+        # Rate limiting guard
+        if not self.rate_limiter.allow_global_send():
+            await msg.reply_text("⏳ Global rate limit reached. Please wait.")
+            return
+
+        # Download the largest photo
+        photo_file = await msg.photo[-1].get_file()
+        image_bytes = await photo_file.download_as_bytearray()
+
         try:
-            # Global rate limit check - with warning, not silent drop
-            if not self.rate_limiter.allow_global_send():
-                logger.warning("Global rate limit hit for image processing")
-                await update.message.reply_text("⏳ Rate limit reached. Please wait a moment.")
-                return
-
-            processing_msg = await update.message.reply_text("📊 Analyzing chart...")
-
-            # Get image data
-            photo = update.message.photo[-1]
-            file = await context.bot.get_file(photo.file_id)
-            image_data = await file.download_as_bytearray()
-
-            # Process through orchestrator (with outbox)
+            # CORRECTED: orchestrator method is process_image
             result = await self.orchestrator.process_image(
-                image_bytes=bytes(image_data),
-                admin_channel_id=update.effective_chat.id,
-                message_id=update.message.message_id
+                image_bytes=bytes(image_bytes),
+                admin_channel_id=msg.chat_id,
+                message_id=msg.message_id,
             )
 
-            if not result['success']:
-                error_msg = result['errors'][0] if result['errors'] else "Unknown error"
-                await processing_msg.edit_text(f"❌ {error_msg}")
+            if not result.get("success"):
+                # errors are stored in a list
+                errors = result.get("errors", [])
+                error = errors[0] if errors else "Unknown error"
+                await msg.reply_text(f"❌ OCR failed: {error}")
                 return
 
-            # Record global send
+            # Record rate limit
             self.rate_limiter.record_global_send()
 
-            # Success
-            trade = result['trade']
-            outbox_count = len(result.get('outbox_ids', []))
-
-            await processing_msg.edit_text(
-                f"✅ Trade created: {trade.symbol}\n"
-                f"ID: {trade.trade_id}\n"
-                f"Queued to {outbox_count} destinations"
-            )
-
-            logger.info(f"Trade created: {trade.trade_id}")
+            # Send formatted response via outbox (already handled by orchestrator)
+            logger.info(f"Trade created from image: {result.get('trade')}")
 
         except Exception as e:
             logger.exception("Error processing image")
-            await update.message.reply_text(f"❌ Error: {str(e)}")
+            await msg.reply_text(f"❌ Error: {str(e)}")
 
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle text commands."""
-        text = update.message.text.strip()
+        """Handle incoming text messages (commands)."""
+        msg = update.effective_message
+        if not msg:
+            return
+        text = msg.text.strip()
+        reply_to = msg.reply_to_message
 
-        replied_msg_id = None
-        if update.message.reply_to_message:
-            replied_msg_id = update.message.reply_to_message.message_id
-
-        if replied_msg_id:
-            await self._process_command(update, context, text, replied_msg_id)
+        if not reply_to:
+            await msg.reply_text(
+                "ℹ️ Please reply to a trade message with a command.\n"
+                "Or send an image to create a new trade."
+            )
             return
 
-        if text.startswith('/'):
-            return
-
-        await update.message.reply_text(
-            "📤 Send me a chart image to create a trade\n"
-            "Or reply to a trade message with a command"
+        await self._process_command(
+            update, context, command_text=text, reply_to_msg_id=reply_to.message_id
         )
 
     async def _process_command(
@@ -178,85 +210,74 @@ class TradingBot:
         update: Update,
         context: ContextTypes.DEFAULT_TYPE,
         command_text: str,
-        reply_to_msg_id: int
+        reply_to_msg_id: int,
     ):
-        """
-        Process command through orchestrator with outbox and rate limiting.
+        """Process command through orchestrator with outbox and rate limiting."""
+        msg = update.effective_message
+        if not msg:
+            return
 
-        FIXED: Preserves exact original flow, only adds guard checks at top.
-        """
-        # RESOLVE TRADE_ID FIRST (same as original)
+        # RESOLVE TRADE_ID FIRST
         mapping = self.mapping_service.get_mapping(reply_to_msg_id)
         if not mapping:
-            await update.message.reply_text("❌ No trade found for this message")
+            await msg.reply_text("❌ No trade found for this message")
             return
-
         trade_id = mapping.trade_id
 
-        # ===============================
         # RATE LIMIT GUARDS (TOP OF HANDLER)
-        # ===============================
-
-        # 1. Check for exact duplicate (same text to same trade within 5s)
+        # 1. Check for exact duplicate
         if self.rate_limiter.is_duplicate(command_text, trade_id):
             logger.info(f"Duplicate command blocked: {command_text[:20]}... for trade {trade_id}")
-            await update.message.reply_text("⚠️ Duplicate command detected. Ignored.")
+            await msg.reply_text("⚠️ Duplicate command detected. Ignored.")
             return
 
-        # 2. Check per-trade-command cooldown (allows PYRAMID then TRAIL)
+        # 2. Check per-trade-command cooldown
         if not self.rate_limiter.allow_trade_update(trade_id, command_text):
             cooldown = self.rate_limiter.get_cooldown_remaining(trade_id, command_text)
             logger.info(f"Rate limit hit for trade {trade_id}: {cooldown:.1f}s remaining")
-            await update.message.reply_text(
-                f"⏳ Please wait {cooldown:.1f}s before repeating this command"
-            )
+            await msg.reply_text(f"⏳ Please wait {cooldown:.1f}s before repeating this command")
             return
 
-        # 3. Check global rate limit (with warning, not silent)
+        # 3. Check global rate limit
         if not self.rate_limiter.allow_global_send():
             logger.warning("Global rate limit hit")
-            await update.message.reply_text("⏳ Global rate limit reached. Please wait.")
+            await msg.reply_text("⏳ Global rate limit reached. Please wait.")
             return
 
         # 4. Acquire lock to prevent concurrent updates to same trade
         if not self.rate_limiter.acquire_update_lock(trade_id):
-            await update.message.reply_text("⏳ Update already in progress. Please wait.")
+            await msg.reply_text("⏳ Update already in progress. Please wait.")
             return
-
-        # ===============================
-        # ORIGINAL FLOW (PRESERVED EXACTLY)
-        # ===============================
 
         try:
             result = await self.orchestrator.process_command(
                 command_text=command_text,
                 reply_to_message_id=reply_to_msg_id,
-                admin_channel_id=update.effective_chat.id
+                admin_channel_id=msg.chat_id,
             )
 
-            if not result['success']:
-                error_msg = result['errors'][0] if result['errors'] else "Command failed"
-                await update.message.reply_text(f"❌ {error_msg}")
+            if not result["success"]:
+                error_msg = result["errors"][0] if result["errors"] else "Command failed"
+                await msg.reply_text(f"❌ {error_msg}")
                 return
 
             # Record successful operations AFTER success
             self.rate_limiter.record_trade_update(trade_id, command_text)
             self.rate_limiter.record_global_send()
 
-            # Get formatted message (EXACT same as original)
-            tg_text = result['formatted'].get('telegram', 'Update processed')
+            # Get formatted message
+            tg_text = result["formatted"].get("telegram", "Update processed")
 
-            # Send response (EXACT same as original)
-            await update.message.reply_text(
-                tg_text,
-                reply_parameters=ReplyParameters(message_id=reply_to_msg_id)
+            # Send response
+            await msg.reply_text(
+                tg_text, reply_parameters=ReplyParameters(message_id=reply_to_msg_id)
             )
 
-            # Delete command if configured (EXACT same as original)
-            cmd_config = config.commands.get('/update')
+            # Delete command if configured
+            cmd_config = config.commands.get("/update")
             if cmd_config and cmd_config.delete_command:
                 try:
-                    await update.message.delete()
+                    await msg.delete()
                 except Exception:
                     pass
 
@@ -264,8 +285,7 @@ class TradingBot:
 
         except Exception as e:
             logger.exception("Error processing command")
-            await update.message.reply_text(f"❌ Error: {str(e)}")
-
+            await msg.reply_text(f"❌ Error: {str(e)}")
         finally:
             # RELEASE LOCK (always)
             self.rate_limiter.release_update_lock(trade_id)
@@ -273,10 +293,9 @@ class TradingBot:
     async def _handle_error(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle errors."""
         logger.error(f"Update {update} caused error {context.error}")
-        if update and update.effective_message:
-            await update.effective_message.reply_text(
-                "❌ An error occurred. Please try again."
-            )
+        msg = update.effective_message if update else None
+        if msg:
+            await msg.reply_text("❌ An error occurred. Please try again.")
 
     async def post_init(self, application: Application):
         """Post-initialization hook - start outbox processor."""
@@ -291,10 +310,8 @@ class TradingBot:
     def run(self):
         """Start the bot (blocking)."""
         logger.info("Starting Telegram bot polling...")
-
         self.application.post_init = self.post_init
         self.application.post_shutdown = self.post_shutdown
-
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
     async def initialize(self):

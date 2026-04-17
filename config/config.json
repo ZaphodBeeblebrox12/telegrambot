@@ -24,7 +24,7 @@
         "twitter": true
       },
       "formatting": {
-        "telegram": "\ud83d\udcc9 {symbol} ({asset_class})\\n\ud83d\udd0e Direction: {side}\\n\u26a1\ufe0f Entry: {entry}\\n\ud83c\udfaf Target: {target}\\n\ud83d\uded1 Stop: {stop_loss}"
+        "telegram": "📉 {symbol} ({asset_class})\n🔎 Direction: {side}\n⚡️ Entry: {entry}\n🎯 Target: {target}\n🛑 Stop: {stop_loss}"
       }
     }
   },
@@ -63,9 +63,9 @@
     }
   },
   "ocr_processing": {
-    "model": "gemini-2.5-flash",
-    "timeout": 30,
-    "prompt": "Analyze this TradingView chart",
+    "model": "gemini-2.5-flash-lite",
+    "timeout": 60,
+    "prompt": "Analyze this TradingView chart image. Extract the trade setup by identifying THREE colored price labels on the vertical price scale (Y-axis).\n\n## STEP 1: FIND THE THREE COLORED PRICE LABELS\nScan the price scale and identify labels by their background hex colors:\n\n1. **GREEN LABEL** (hex ~#089981 or #22AB94 - teal-green)\n   - This is the TARGET price\n   - Usually the lowest price for SHORT, highest for LONG\n\n2. **DARK GREY LABEL** (hex ~#5D606B or #787B86 - dark grey/brown)\n   - This is the ENTRY price\n   - Located between green and red zones/lines\n   - Darkest/most muted color of the three\n   - NO timer next to it\n\n3. **RED LABEL** (hex ~#F23645 or #FF5252 - bright red)\n   - This is the STOP LOSS price\n   - Usually the highest price for SHORT, lowest for LONG\n\n## STEP 2: IGNORE THESE COLORS (CRITICAL)\nDO NOT extract prices with these colors:\n- **CYAN/TEAL** (hex ~#00BCD4 or #26C6DA) - has a countdown timer like \"00:33\" or \"00:53\"\n- **BLUE** (hex ~#2196F3) - labeled \"Bid\" or \"Ask\"\n- Any bright colors on the RIGHT side panel with timers\n\n## STEP 3: DETERMINE DIRECTION\nCompare vertical positions:\n- If GREEN is BELOW GREY = SHORT trade (green=target, red=stop)\n- If GREEN is ABOVE GREY = LONG trade (green=target, red=stop)\n\n## STEP 4: PRICE FORMAT AND MAGNITUDE VALIDATION\n**First, classify the asset** (FOREX, CRYPTO, METAL, ENERGY, INDEX, STOCK, or OPTION).\n\n### IF ASSET IS **OPTION** (contains \"CALL\" or \"PUT\" in symbol):\n- **Skip all magnitude validation.**\n- Read prices exactly as they appear on the chart, removing only commas.\n- Example: If the chart shows \"42.15\" for a NIFTY CALL option, output \"42.15\". Do NOT multiply or shift decimals.\n\n### IF ASSET IS **NOT AN OPTION**:\n- **Comma Handling**: The chart may use commas as thousands separators (e.g., `71,829`). Convert this to a plain number: `71829`. Do NOT treat a comma as a decimal point.\n- **Self‑Validation**: After extracting the entry price, use your own knowledge of typical price ranges for this asset. Count the number of digits before the decimal point in your extracted price.\n  - Bitcoin (BTC): 5 digits (70,000–100,000)\n  - Ethereum (ETH): 4 digits (3,000–4,000)\n  - Forex (EURUSD): 1 digit (1.0x)\n  - Gold (XAUUSD): 4 digits (2,400–2,500)\n  - S&P 500: 4–5 digits (5,000–6,000)\n- If your extracted entry price has **2 or more fewer digits** than the typical range (e.g., you extracted `71.829` for Bitcoin), you have mistakenly placed a decimal point. Multiply the price by `1000` (or the appropriate power of 10) to correct it.\n- Apply the **same correction factor** to the target and stop loss prices.\n\n## STEP 5: ASSET CLASSIFICATION\nClassify the asset as: FOREX, CRYPTO, METAL, ENERGY, INDEX, STOCK, or OPTION.\n\n**IMPORTANT RULE FOR OPTIONS:**\n- If the symbol contains the words \"CALL\" or \"PUT\" (e.g., \"NIFTY 13 APR 23850 CALL\"), you MUST classify it as **OPTION**, even if the underlying is an index.\n- Do NOT classify index options as INDEX. Use OPTION.\n\nReturn JSON:\n{\n  \"symbol\": \"NIFTY 13 APR 23850 CALL\",\n  \"asset_class\": \"OPTION\",\n  \"setup_found\": true,\n  \"side\": \"LONG\",\n  \"entry\": \"42.15\",\n  \"target\": \"65.10\",\n  \"stop_loss\": \"32.40\"\n}",
     "key_management": {
       "max_retries": 3
     },
@@ -91,8 +91,8 @@
     "show_booked_pnl": true,
     "show_remaining_position": true,
     "tree_prefixes": {
-      "branch": "\u251c\u2500",
-      "end": "\u2514\u2500"
+      "branch": "├─",
+      "end": "└─"
     }
   },
   "leverage_settings": {

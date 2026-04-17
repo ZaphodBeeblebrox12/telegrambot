@@ -1,7 +1,20 @@
 """Trading Bot - Main Entry Point"""
 import os
 import sys
+import logging
 from pathlib import Path
+
+# --- LOGGING CONFIGURATION (ADDED FOR DEBUG) ---
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S'
+)
+# Reduce noise from third-party libraries
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+# ------------------------------------------------
 
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
@@ -51,7 +64,7 @@ def main():
     print("System ready.")
     print("=" * 60)
 
-    # ADD THIS - Start the bot
+    # Start the bot
     print("\n🚀 Starting Telegram bot...")
     from bot.telegram_bot import TradingBot
     bot = TradingBot()
