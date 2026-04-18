@@ -4,7 +4,7 @@ Drop-in replacement for core/db.py
 """
 from sqlalchemy import (
     create_engine, Column, Integer, String, DateTime,
-    Numeric, ForeignKey, Text, JSON
+    Numeric, ForeignKey, Text, JSON, text
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
@@ -113,11 +113,30 @@ class Database:
                 os.getenv("DB_CONNECTION", "sqlite:///trading_bot.db")
             )
 
+        is_sqlite = connection_string.startswith("sqlite")
+
+        # CRITICAL FIX: SQLite concurrency settings
+        connect_args = {}
+        if is_sqlite:
+            connect_args = {
+                "check_same_thread": False,   # Allow cross-thread use (async handlers)
+                "timeout": 30.0,              # Busy timeout in seconds (default 5 is too short)
+            }
+
         self.engine = create_engine(
             connection_string,
             pool_pre_ping=True,
-            pool_recycle=3600
+            pool_recycle=3600,
+            connect_args=connect_args
         )
+
+        # CRITICAL FIX: Enable WAL mode for SQLite to reduce locking contention
+        if is_sqlite:
+            with self.engine.connect() as conn:
+                conn.execute(text("PRAGMA journal_mode=WAL"))
+                conn.execute(text("PRAGMA busy_timeout=30000"))
+                conn.commit()
+
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
 
