@@ -1,7 +1,7 @@
 """
 Config-driven Command Executor - PRODUCTION VERSION (FIXED)
 Drop-in replacement with:
-- Transaction safety
+- Transaction safety (NO commit inside, caller manages it)
 - Closed trade protection
 - Guaranteed snapshot rebuild
 - Audit logging with before/after state
@@ -24,6 +24,7 @@ from sqlalchemy import select, update
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class ExecutionResult:
     """Result of command execution (UNCHANGED INTERFACE)"""
@@ -33,9 +34,13 @@ class ExecutionResult:
     variables: Dict[str, Any]
     error: Optional[str] = None
 
+
 class ConfigExecutor:
     """
     PRODUCTION command executor with full safety guarantees.
+
+    CRITICAL: This class does NOT commit the session.
+    Caller must commit after calling execute().
     """
 
     def __init__(self):
@@ -181,8 +186,10 @@ class ConfigExecutor:
         session.add(event)
 
     async def execute(self, trade: Trade, parsed: ParsedCommand) -> ExecutionResult:
-        """Execute parsed command with full transaction safety"""
+        """Execute parsed command with full transaction safety.
 
+        CRITICAL: Does NOT commit session. Caller must commit.
+        """
         handler = self.handlers.get(parsed.subcommand)
 
         if not handler:
@@ -266,7 +273,7 @@ class ConfigExecutor:
                 payload, idempotency_key, before_state, after_state
             )
 
-            session.commit()
+            # CRITICAL FIX: DO NOT commit here - caller manages transaction
             return result
 
         except Exception as e:
@@ -280,7 +287,8 @@ class ConfigExecutor:
                 error=str(e)
             )
         finally:
-            session.close()
+            # CRITICAL FIX: DO NOT close session here - caller manages it
+            pass
 
     def _build_payload(self, parsed: ParsedCommand) -> Dict:
         payload = {}
@@ -333,7 +341,7 @@ class ConfigExecutor:
         )
 
     async def _handle_partial(self, session, trade: Trade, trade_db_id: int,
-                              parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                            parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         from core.fifo_engine import FIFOEngine
 
         if not parsed.price:
@@ -546,7 +554,7 @@ class ConfigExecutor:
         )
 
     async def _handle_not_triggered(self, session, trade: Trade, trade_db_id: int,
-                                    parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                                      parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         session.execute(
             update(TradeModel).where(TradeModel.id == trade_db_id)
             .values(status='NOT_TRIGGERED')
@@ -609,7 +617,9 @@ class ConfigExecutor:
     def list_handlers(self) -> List[str]:
         return list(self.handlers.keys())
 
+
 _executor = None
+
 
 def get_executor():
     global _executor

@@ -6,6 +6,7 @@ import os
 from typing import Dict, Optional, Set, Tuple
 from pathlib import Path
 
+
 class RateLimitManager:
     """
     Production rate limiting for trading bot.
@@ -14,6 +15,8 @@ class RateLimitManager:
     KEY FIX: Uses (trade_id, command_type) as key, not just trade_id.
     This allows: PYRAMID then TRAIL (different types, same trade)
     This blocks: TRAIL then TRAIL (same type, same trade within window)
+
+    CRITICAL FIX: Ensures locks are released safely with try/finally.
     """
 
     def __init__(self, persistence_path: Optional[str] = None):
@@ -45,12 +48,12 @@ class RateLimitManager:
             if os.path.exists(self._persistence_path):
                 with open(self._persistence_path, 'r') as f:
                     data = json.load(f)
-                    # Only load recent entries (< 1 hour old)
-                    cutoff = time.time() - 3600
-                    self._trade_cooldowns = {
-                        tuple(k): v for k, v in data.get('cooldowns', {}).items()
-                        if v > cutoff
-                    }
+                # Only load recent entries (< 1 hour old)
+                cutoff = time.time() - 3600
+                self._trade_cooldowns = {
+                    tuple(k): v for k, v in data.get('cooldowns', {}).items()
+                    if v > cutoff
+                }
         except Exception:
             pass  # Silent fail - stateless is acceptable
 
@@ -161,13 +164,15 @@ class RateLimitManager:
 
     def release_update_lock(self, trade_id: str):
         """Release lock for trade update."""
+        # CRITICAL FIX: Use discard instead of remove to avoid KeyError
+        # if lock was already released or never acquired
         self._active_updates.discard(trade_id)
 
     def _cleanup_old_cooldowns(self):
         """Remove cooldown entries older than 1 hour."""
         cutoff = time.time() - 3600
         self._trade_cooldowns = {
-            k: v for k, v in self._trade_cooldowns.items() 
+            k: v for k, v in self._trade_cooldowns.items()
             if v > cutoff
         }
 
@@ -175,12 +180,14 @@ class RateLimitManager:
         """Remove dedup entries older than window."""
         cutoff = time.time() - self._dedup_window
         self._recent_commands = {
-            k: v for k, v in self._recent_commands.items() 
+            k: v for k, v in self._recent_commands.items()
             if v > cutoff
         }
 
+
 # Singleton instance
 _rate_limit_manager = None
+
 
 def get_rate_limit_manager() -> RateLimitManager:
     global _rate_limit_manager

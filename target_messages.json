@@ -16,6 +16,54 @@
         "message_id": 6530,
         "timestamp": 1776454157.3993988
       }
+    ],
+    "GOLDSPOTUSDOLLAR-20260418-04": [
+      {
+        "channel_id": -1002458855204,
+        "message_id": 2483,
+        "timestamp": 1776518863.1792603
+      },
+      {
+        "channel_id": -1001648497395,
+        "message_id": 6531,
+        "timestamp": 1776518864.3012645
+      }
+    ],
+    "GOLDSPOTUSDOLLAR-20260418-05": [
+      {
+        "channel_id": -1002458855204,
+        "message_id": 2486,
+        "timestamp": 1776519123.0793617
+      },
+      {
+        "channel_id": -1001648497395,
+        "message_id": 6532,
+        "timestamp": 1776519124.4546537
+      }
+    ],
+    "GOLDSPOTUSDOLLAR-20260418-06": [
+      {
+        "channel_id": -1002458855204,
+        "message_id": 2487,
+        "timestamp": 1776519125.2525637
+      },
+      {
+        "channel_id": -1001648497395,
+        "message_id": 6533,
+        "timestamp": 1776519126.3928704
+      }
+    ],
+    "GOLDSPOTUSDOLLAR-20260418-07": [
+      {
+        "channel_id": -1002458855204,
+        "message_id": 2488,
+        "timestamp": 1776519713.522784
+      },
+      {
+        "channel_id": -1001648497395,
+        "message_id": 6534,
+        "timestamp": 1776519714.8850513
+      }
     ]
   }
 }

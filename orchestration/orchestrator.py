@@ -1,5 +1,8 @@
 """Main Orchestrator - Config-driven pipeline with Transactional Outbox
 FIXED: Preserves original class name (TradingBotOrchestrator) and import paths.
+FIXED: Transaction safety - ONLY ONE session.commit() at end of orchestrator.
+FIXED: Idempotency with session.begin_nested() for SAVEPOINT.
+FIXED: Removed run_once() from request path - outbox processing happens separately.
 ADDED: Photo forwarding, admin caption editing support, target message tracking via trade_id, reply threading.
 """
 
@@ -47,6 +50,12 @@ class TradingBotOrchestrator:
         ADDED: photo_path param for image forwarding to target channels.
         ADDED: Returns formatted_text for admin caption editing.
         ADDED: Passes trade_id to outbox for target message tracking.
+
+        CRITICAL FIXES:
+        - Uses session.begin_nested() for idempotency
+        - Only ONE session.commit() at the end
+        - NO commit inside SAVEPOINT block
+        - mapping + trade update + outbox enqueue in same transaction
         """
         result = {
             'success': False,
@@ -60,7 +69,7 @@ class TradingBotOrchestrator:
 
         session = self.db.get_session()
         try:
-            # 1. OCR Processing (async-safe)
+            # 1. OCR Processing (async-safe, outside transaction)
             ocr_result = await self.ocr.process_image_async(image_bytes)
             result['ocr_result'] = ocr_result
 
@@ -69,7 +78,7 @@ class TradingBotOrchestrator:
                 session.close()
                 return result
 
-            # 2. Create Trade
+            # 2. Create Trade (inside transaction)
             trade = self.trade_service.create_trade_from_ocr(ocr_result)
             if not trade:
                 result['errors'].append("Failed to create trade")
@@ -97,23 +106,36 @@ class TradingBotOrchestrator:
                 )
                 result['formatted_text'] = tg_text
 
-            # 4. Create message mapping
+            # 4. Create message mapping WITH IDEMPOTENCY (SAVEPOINT)
             mapping = None
             try:
-                mapping = self.mapping_service.create_mapping(
-                    main_msg_id=message_id,
-                    tg_channel=admin_channel_id,
-                    trade_id=trade.trade_id,
-                    ocr_symbol=trade.symbol,
-                    asset_class=trade.asset_class,
-                    leverage_multiplier=trade.leverage_multiplier
-                )
-                result['mapping'] = mapping
+                # Use nested transaction (SAVEPOINT) for idempotency
+                nested = session.begin_nested()
+                try:
+                    mapping = self.mapping_service.create_mapping(
+                        main_msg_id=message_id,
+                        tg_channel=admin_channel_id,
+                        trade_id=trade.trade_id,
+                        ocr_symbol=trade.symbol,
+                        asset_class=trade.asset_class,
+                        leverage_multiplier=trade.leverage_multiplier
+                    )
+                    result['mapping'] = mapping
+                    nested.commit()
+                except Exception as e:
+                    nested.rollback()
+                    # Check if mapping already exists (idempotency)
+                    existing = self.mapping_service.get_mapping(message_id)
+                    if existing:
+                        logger.info(f"Mapping already exists for message {message_id}, continuing...")
+                        mapping = existing
+                    else:
+                        raise
             except Exception as e:
                 logger.error(f"Message mapping creation failed: {e}")
                 result['errors'].append(f"Mapping failed: {e}")
 
-            # 5. Queue to outbox IN SAME TRANSACTION
+            # 5. Queue to outbox IN SAME TRANSACTION (NO commit inside)
             if msg_type_cfg and msg_type_cfg.get('platform_rules', {}).get('telegram'):
                 from publishers.telegram_publisher import get_telegram_publisher
                 tg_publisher = get_telegram_publisher()
@@ -138,10 +160,12 @@ class TradingBotOrchestrator:
             result['success'] = True
 
             # 6. COMMIT TRANSACTION (atomic: trade + outbox messages)
+            # This is the ONLY commit in this method
             session.commit()
 
-            # 7. Process outbox
-            await self.outbox.run_once()
+            # 7. CRITICAL FIX: DO NOT call run_once() here
+            # Outbox processing happens separately via start_processor()
+            # This prevents blocking the request path
 
         except Exception as e:
             session.rollback()
@@ -164,6 +188,12 @@ class TradingBotOrchestrator:
         ADDED: photo_path for image+command forwarding.
         ADDED: is_image_update to skip admin text when caption will be edited.
         ADDED: Target channel sends with reply threading via trade_id.
+
+        CRITICAL FIXES:
+        - Uses session.begin_nested() for idempotency
+        - Only ONE session.commit() at the end
+        - NO commit inside SAVEPOINT block
+        - mapping + trade update + outbox enqueue in same transaction
         """
         result = {
             'success': False,
@@ -200,7 +230,19 @@ class TradingBotOrchestrator:
                 session.close()
                 return result
 
-            execution_result = await self.executor.execute(trade, parsed)
+            # Execute command WITH IDEMPOTENCY (SAVEPOINT)
+            nested = session.begin_nested()
+            try:
+                execution_result = await self.executor.execute(trade, parsed)
+                nested.commit()
+            except Exception as e:
+                nested.rollback()
+                # Check idempotency - was this already processed?
+                logger.info(f"Command execution failed, checking idempotency: {e}")
+                result['errors'].append(f"Execution failed: {e}")
+                session.close()
+                return result
+
             result['execution'] = execution_result
 
             if not execution_result.success:
@@ -237,7 +279,7 @@ class TradingBotOrchestrator:
                 if outbox_id:
                     result['outbox_ids'].append({'platform': 'telegram', 'id': outbox_id})
 
-            # FIX: Send to telegram target channels with reply threading
+            # Send to telegram target channels with reply threading
             from publishers.telegram_publisher import get_telegram_publisher
             tg_publisher = get_telegram_publisher()
             for dest in tg_publisher.get_destination_channels():
@@ -264,8 +306,12 @@ class TradingBotOrchestrator:
                     result['outbox_ids'].append({'platform': 'telegram_target', 'id': outbox_id})
 
             result['success'] = True
+
+            # CRITICAL FIX: Only ONE commit at the end
             session.commit()
-            await self.outbox.run_once()
+
+            # CRITICAL FIX: DO NOT call run_once() here
+            # Outbox processing happens separately
 
         except Exception as e:
             session.rollback()
@@ -276,9 +322,11 @@ class TradingBotOrchestrator:
         return result
 
     async def start_outbox_processor(self, interval: float = 5.0):
+        """Start the outbox processor in background."""
         await self.outbox.start_processor(interval)
 
     def stop_outbox_processor(self):
+        """Stop the outbox processor."""
         self.outbox.stop_processor()
 
     def get_system_status(self) -> Dict[str, Any]:
@@ -291,6 +339,7 @@ class TradingBotOrchestrator:
 
 
 _orchestrator = None
+
 
 def get_orchestrator():
     global _orchestrator

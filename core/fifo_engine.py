@@ -15,6 +15,7 @@ from sqlalchemy import select, update
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class FIFOCloseResult:
     """Result of FIFO close operation"""
@@ -24,6 +25,7 @@ class FIFOCloseResult:
     pnl: Decimal
     remaining_in_entry: Decimal
 
+
 @dataclass
 class FIFOCalculation:
     """Complete FIFO calculation result"""
@@ -32,6 +34,7 @@ class FIFOCalculation:
     remaining_size: Decimal
     new_weighted_avg: Decimal
     tree_lines: List[str]
+
 
 class FIFOEngine:
     """

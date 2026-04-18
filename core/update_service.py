@@ -1,6 +1,6 @@
 """
 UpdateService - Production Grade Update Processing (FIXED VERSION)
-- Idempotency guarantee
+- Idempotency guarantee with session.begin_nested()
 - Transaction safety
 - Row locking
 - CLOSED trade protection
@@ -20,6 +20,7 @@ from sqlalchemy import select, and_
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class UpdateResult:
     """Result of update processing"""
@@ -30,12 +31,13 @@ class UpdateResult:
     error: Optional[str] = None
     idempotency_key: Optional[str] = None
 
+
 class UpdateService:
     """
     Core update processing engine.
 
     GUARANTEES:
-    1. Idempotency - duplicate events ignored
+    1. Idempotency - duplicate events ignored (with session.begin_nested())
     2. Transactions - all or nothing
     3. Row locking - prevents concurrent modification
     4. CLOSED protection - rejects updates to closed trades
@@ -176,6 +178,9 @@ class UpdateService:
     ) -> UpdateResult:
         """
         Process trade update with full transaction safety.
+
+        CRITICAL: Uses session.begin_nested() for idempotency SAVEPOINT.
+        NO commit inside SAVEPOINT block.
         """
         # Generate idempotency key
         idempotency_key = self._generate_idempotency_key(
@@ -209,6 +214,8 @@ class UpdateService:
         # CAPTURE BEFORE STATE (for audit)
         before_state = self._capture_before_state(trade_db_id)
 
+        # CRITICAL FIX: Use nested transaction (SAVEPOINT) for idempotency
+        nested = self.session.begin_nested()
         try:
             handler_map = {
                 'TRAIL': self._handle_trail,
@@ -228,6 +235,7 @@ class UpdateService:
 
             handler = handler_map.get(subcommand)
             if not handler:
+                nested.rollback()
                 return UpdateResult(
                     success=False,
                     trade_id=trade_id_str,
@@ -252,24 +260,28 @@ class UpdateService:
             if result.success:
                 self._get_snapshot_service().rebuild_snapshot(trade_db_id)
 
-                # CAPTURE AFTER STATE
-                after_state = self._capture_before_state(trade_db_id)
+            # CAPTURE AFTER STATE
+            after_state = self._capture_before_state(trade_db_id)
 
-                # Record event with audit trail
-                self._record_event(
-                    trade_db_id=trade_db_id,
-                    event_type=subcommand,
-                    payload=payload,
-                    idempotency_key=idempotency_key,
-                    success=result.success,
-                    before_state=before_state,
-                    after_state=after_state
-                )
+            # Record event with audit trail
+            self._record_event(
+                trade_db_id=trade_db_id,
+                event_type=subcommand,
+                payload=payload,
+                idempotency_key=idempotency_key,
+                success=result.success,
+                before_state=before_state,
+                after_state=after_state
+            )
+
+            # Commit the SAVEPOINT (not the outer transaction)
+            nested.commit()
 
             result.idempotency_key = idempotency_key
             return result
 
         except Exception as e:
+            nested.rollback()
             logger.error(f"Update processing failed: {e}", exc_info=True)
             return UpdateResult(
                 success=False,
@@ -303,7 +315,7 @@ class UpdateService:
             )
 
         # Lock and update snapshot
-        session.execute(
+        self.session.execute(
             select(TradeSnapshotModel)
             .where(TradeSnapshotModel.trade_id == trade_db_id)
             .with_for_update()
@@ -401,7 +413,7 @@ class UpdateService:
                 'symbol': symbol,
                 'percentage': float(percentage),
                 'price': float(price),
-                'tree_lines': '\\n'.join(calc.tree_lines),
+                'tree_lines': '\n'.join(calc.tree_lines),
                 'booked_pnl': float(calc.total_pnl),
                 'remaining_size': float(calc.remaining_size),
                 'weighted_avg': float(calc.new_weighted_avg),

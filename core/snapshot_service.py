@@ -1,4 +1,6 @@
-"""Snapshot Service – Rebuild trade snapshots from entries."""
+"""Snapshot Service – Rebuild trade snapshots from entries.
+FIXED: Removed session.commit() - must be called within existing transaction.
+"""
 
 import logging
 from typing import Optional
@@ -15,13 +17,21 @@ logger = logging.getLogger(__name__)
 class SnapshotService:
     """Service for rebuilding and managing trade snapshots."""
 
-    def __init__(self):
+    def __init__(self, session: Optional[Session] = None):
+        """
+        Initialize with optional session.
+        If session provided, use it (must be called within transaction).
+        If not, create new session (for standalone use only).
+        """
         self.db = Database()
+        self.session = session
 
     def rebuild_snapshot(self, session: Session, trade_db_id: int) -> Optional[TradeSnapshotModel]:
         """
         Recalculate the snapshot for a given trade based on its entries.
-        Must be called within an existing transaction.
+
+        CRITICAL FIX: Must be called within an existing transaction.
+        NO session.commit() here - caller manages transaction.
         """
         # Fetch trade
         trade = session.execute(
@@ -43,7 +53,7 @@ class SnapshotService:
                 .where(TradeSnapshotModel.trade_id == trade_db_id)
                 .values(weighted_avg_entry=0, total_size=0, remaining_size=0)
             )
-            session.commit()
+            # CRITICAL FIX: No commit here - caller manages transaction
             return None
 
         # Use Decimal for precise calculations (database uses DECIMAL)
@@ -74,7 +84,7 @@ class SnapshotService:
                 update(TradeSnapshotModel)
                 .where(TradeSnapshotModel.trade_id == trade_db_id)
                 .values(
-                    weighted_avg_entry=float(weighted_avg),   # stored as float in model, but calculated with Decimal
+                    weighted_avg_entry=float(weighted_avg),
                     total_size=float(total_size),
                     remaining_size=float(remaining_size),
                 )
@@ -98,6 +108,7 @@ class SnapshotService:
             session.add(snapshot)
             session.flush()
 
+        # CRITICAL FIX: No commit here - caller manages transaction
         return snapshot
 
 
