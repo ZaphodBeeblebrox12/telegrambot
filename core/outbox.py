@@ -2,6 +2,7 @@
 FIXED: Twitter filtering now happens at ENQUEUE time, not process time.
 FIXED: Atomic message claiming prevents duplicate sends under concurrency.
 FIXED: Detached instance error resolved by copying data before session close.
+ADDED: Better debug logging.
 """
 import json
 import asyncio
@@ -59,13 +60,13 @@ class TransactionalOutbox:
 
         # Check global Twitter toggle
         if not is_twitter_enabled():
-            print(f"[TWITTER] Skipping enqueue for {message_type}: Twitter disabled")
+            logger.debug(f"[TWITTER] Skipping enqueue for {message_type}: Twitter disabled")
             return True
 
         # Check event type filter
         event_type = message_type or "position_update"
         if not should_post_to_twitter(event_type):
-            print(f"[TWITTER] Skipping enqueue for {event_type}: not in allowed list")
+            logger.debug(f"[TWITTER] Skipping enqueue for {event_type}: not in allowed list")
             return True
 
         return False
@@ -108,6 +109,8 @@ class TransactionalOutbox:
         )
         session.add(msg_model)
 
+        logger.debug(f"Enqueued message: {msg_id} for {destination}")
+
         return msg_id
 
     def get_pending(self, session: Optional[Session] = None, limit: int = 100) -> List[OutboxMessageModel]:
@@ -140,7 +143,7 @@ class TransactionalOutbox:
             msg.error = error
             if status == "completed":
                 msg.processed_at = datetime.utcnow()
-
+            logger.debug(f"Marked message {message_id} as {status}")
 
 class AsyncProcessor:
     """Async message processor with retry (Twitter filtering now in enqueue)"""
@@ -151,6 +154,7 @@ class AsyncProcessor:
 
     def register_handler(self, destination: str, handler: callable):
         self.handlers[destination] = handler
+        logger.info(f"Registered handler for destination: {destination}")
 
     async def process_with_retry(
         self,
@@ -164,9 +168,11 @@ class AsyncProcessor:
         if not handler:
             message.error = f"No handler for destination: {message.destination}"
             message.status = "failed"
+            logger.error(f"No handler for destination: {message.destination}")
             return False
 
         payload = json.loads(message.payload) if message.payload else {}
+        logger.debug(f"Processing message {message.message_id} for {message.destination}")
 
         for attempt in range(message.retry_count, self.max_retries + 1):
             try:
@@ -178,10 +184,12 @@ class AsyncProcessor:
                 message.status = "completed"
                 message.processed_at = datetime.utcnow()
                 message.error = None
+                logger.info(f"Successfully processed message {message.message_id}")
                 return True
 
             except Exception as e:
                 message.error = str(e)[:500]
+                logger.warning(f"Attempt {attempt} failed for {message.message_id}: {e}")
 
                 if attempt < self.max_retries:
                     message.status = "retrying"
@@ -189,9 +197,9 @@ class AsyncProcessor:
                     await asyncio.sleep(delay)
                 else:
                     message.status = "failed"
+                    logger.error(f"Message {message.message_id} failed after {self.max_retries} attempts")
 
         return False
-
 
 class OutboxManager:
     """Main outbox manager with transactional support (FIX 3) + Twitter controls at enqueue"""
@@ -238,6 +246,8 @@ class OutboxManager:
 
         This prevents duplicate sends when multiple workers run concurrently.
         """
+        processed_count = 0
+
         while True:
             # Step 1 & 2: Read and atomically claim next pending message
             session = self.db.get_session()
@@ -266,7 +276,7 @@ class OutboxManager:
                 # ATOMIC CLAIM: update status only if still pending
                 result = session.execute(
                     text("""
-                        UPDATE outbox_messages 
+                        UPDATE outbox_messages
                         SET status = 'processing'
                         WHERE id = :id AND status = 'pending'
                     """),
@@ -276,10 +286,12 @@ class OutboxManager:
                 # Check if claim succeeded
                 if result.rowcount == 0:
                     # Another worker claimed it, skip and try next
+                    logger.debug(f"Message {msg_id} already claimed by another worker")
                     continue
 
                 # COMMIT CLAIM IMMEDIATELY
                 session.commit()
+                logger.debug(f"Claimed message {message_id} for processing")
 
                 # Store copied data for processing outside session
                 claimed_msg_data = {
@@ -329,6 +341,7 @@ class OutboxManager:
                             detached_msg.error if not success else None
                         )
                         session2.commit()
+                        processed_count += 1
                     except Exception as e:
                         session2.rollback()
                         logger.error(f"Failed to mark message processed: {e}")
@@ -342,7 +355,7 @@ class OutboxManager:
                     session2 = self.db.get_session()
                     try:
                         self.outbox.mark_processed(
-                            session2, claimed_msg_data['message_id'], 
+                            session2, claimed_msg_data['message_id'],
                             'failed', str(e)
                         )
                         session2.commit()
@@ -351,8 +364,14 @@ class OutboxManager:
                     finally:
                         session2.close()
 
+        if processed_count > 0:
+            logger.info(f"Processed {processed_count} outbox messages")
+        else:
+            logger.debug("No pending outbox messages")
+
     async def start_processor(self, interval: float = 5.0):
         self._running = True
+        logger.info(f"Starting outbox processor with interval {interval}s")
         while self._running:
             try:
                 await self.process_pending()
@@ -363,14 +382,13 @@ class OutboxManager:
 
     def stop_processor(self):
         self._running = False
+        logger.info("Outbox processor stopped")
 
     async def run_once(self):
         """Process pending messages once."""
         await self.process_pending()
 
-
 _outbox: Optional[OutboxManager] = None
-
 
 def get_outbox() -> OutboxManager:
     global _outbox

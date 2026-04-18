@@ -4,8 +4,8 @@ FIXED: Transaction safety - ONLY ONE session.commit() at end of orchestrator.
 FIXED: Idempotency with session.begin_nested() for SAVEPOINT.
 FIXED: Removed run_once() from request path - outbox processing happens separately.
 ADDED: Photo forwarding, admin caption editing support, target message tracking via trade_id, reply threading.
+ADDED: Better debug logging for command parsing and execution.
 """
-
 from typing import Optional, Dict, Any, List
 import asyncio
 import logging
@@ -23,7 +23,6 @@ from messaging.message_mapping_service import get_mapping_service
 
 logger = logging.getLogger(__name__)
 
-
 class TradingBotOrchestrator:
     """Main orchestrator with Transactional Outbox"""
 
@@ -37,6 +36,7 @@ class TradingBotOrchestrator:
         self.mapping_service = get_mapping_service()
         self.outbox = get_outbox()
         self.db = RepositoryFactory.get_database()
+        logger.info("TradingBotOrchestrator initialized")
 
     async def process_image(
         self,
@@ -86,6 +86,7 @@ class TradingBotOrchestrator:
                 return result
 
             result['trade'] = trade
+            logger.info(f"Created trade: {trade.trade_id} for {trade.symbol}")
 
             # 3. Format message
             msg_type_cfg = config.get_message_type('trade_setup')
@@ -104,7 +105,7 @@ class TradingBotOrchestrator:
                     },
                     trade
                 )
-                result['formatted_text'] = tg_text
+            result['formatted_text'] = tg_text
 
             # 4. Create message mapping WITH IDEMPOTENCY (SAVEPOINT)
             mapping = None
@@ -162,14 +163,15 @@ class TradingBotOrchestrator:
             # 6. COMMIT TRANSACTION (atomic: trade + outbox messages)
             # This is the ONLY commit in this method
             session.commit()
+            logger.info(f"Image processing complete for trade {trade.trade_id}")
 
             # 7. CRITICAL FIX: DO NOT call run_once() here
             # Outbox processing happens separately via start_processor()
-            # This prevents blocking the request path
 
         except Exception as e:
             session.rollback()
             result['errors'].append(str(e))
+            logger.error(f"Error in process_image: {e}", exc_info=True)
         finally:
             session.close()
 
@@ -188,6 +190,7 @@ class TradingBotOrchestrator:
         ADDED: photo_path for image+command forwarding.
         ADDED: is_image_update to skip admin text when caption will be edited.
         ADDED: Target channel sends with reply threading via trade_id.
+        ADDED: Debug logging for command parsing and execution.
 
         CRITICAL FIXES:
         - Uses session.begin_nested() for idempotency
@@ -195,6 +198,10 @@ class TradingBotOrchestrator:
         - NO commit inside SAVEPOINT block
         - mapping + trade update + outbox enqueue in same transaction
         """
+        logger.info(f"=== PROCESS COMMAND START ===")
+        logger.info(f"Command text: '{command_text}'")
+        logger.info(f"Reply to message ID: {reply_to_message_id}")
+
         result = {
             'success': False,
             'parsed': None,
@@ -207,38 +214,47 @@ class TradingBotOrchestrator:
 
         session = self.db.get_session()
         try:
+            # 1. Parse command
             parsed = self.router.parse_update_command(command_text)
             if not parsed:
                 result['errors'].append("Could not parse command")
+                logger.warning(f"Command parsing failed for: '{command_text}'")
                 session.close()
                 return result
 
             result['parsed'] = parsed
+            logger.info(f"Parsed command: subcommand={parsed.subcommand}, price={parsed.price}, percentage={parsed.percentage}")
 
+            # 2. Resolve trade from reply
             parent_mapping = None
             if reply_to_message_id:
                 parent_mapping = self.mapping_service.get_mapping(reply_to_message_id)
+                logger.info(f"Parent mapping for reply_to {reply_to_message_id}: {parent_mapping}")
 
             if not parent_mapping:
-                result['errors'].append("No parent message found")
+                result['errors'].append("No parent message found - must reply to trade message")
+                logger.warning(f"No parent mapping found for reply_to {reply_to_message_id}")
                 session.close()
                 return result
 
             trade = self.trade_service.get_trade(parent_mapping.trade_id)
             if not trade:
                 result['errors'].append("Trade not found")
+                logger.error(f"Trade not found: {parent_mapping.trade_id}")
                 session.close()
                 return result
 
-            # Execute command WITH IDEMPOTENCY (SAVEPOINT)
+            logger.info(f"Resolved trade: {trade.trade_id} ({trade.symbol})")
+
+            # 3. Execute command WITH IDEMPOTENCY (SAVEPOINT)
             nested = session.begin_nested()
             try:
                 execution_result = await self.executor.execute(trade, parsed)
                 nested.commit()
+                logger.info(f"Execution result: success={execution_result.success}, message_type={execution_result.message_type}")
             except Exception as e:
                 nested.rollback()
-                # Check idempotency - was this already processed?
-                logger.info(f"Command execution failed, checking idempotency: {e}")
+                logger.error(f"Command execution failed: {e}", exc_info=True)
                 result['errors'].append(f"Execution failed: {e}")
                 session.close()
                 return result
@@ -247,10 +263,11 @@ class TradingBotOrchestrator:
 
             if not execution_result.success:
                 result['errors'].append(execution_result.error or "Execution failed")
+                logger.warning(f"Execution failed: {execution_result.error}")
                 session.close()
                 return result
 
-            # Format for each platform
+            # 4. Format for each platform
             for platform in ['telegram']:
                 formatted = self.formatter.format_message(
                     execution_result.message_type or 'position_update',
@@ -259,11 +276,12 @@ class TradingBotOrchestrator:
                     execution_result.trade
                 )
                 result['formatted'][platform] = formatted
+                logger.debug(f"Formatted for {platform}: {formatted[:100]}...")
 
             tg_text = result['formatted'].get('telegram', '')
             result['formatted_text'] = tg_text
 
-            # Send to admin channel via outbox (SKIP for image updates — caption edit handles it)
+            # 5. Send to admin channel via outbox (SKIP for image updates — caption edit handles it)
             if not is_image_update:
                 outbox_id = self.outbox.enqueue_in_transaction(
                     session=session,
@@ -278,8 +296,9 @@ class TradingBotOrchestrator:
                 )
                 if outbox_id:
                     result['outbox_ids'].append({'platform': 'telegram', 'id': outbox_id})
+                    logger.info(f"Enqueued admin message: {outbox_id}")
 
-            # Send to telegram target channels with reply threading
+            # 6. Send to telegram target channels with reply threading
             from publishers.telegram_publisher import get_telegram_publisher
             tg_publisher = get_telegram_publisher()
             for dest in tg_publisher.get_destination_channels():
@@ -287,6 +306,8 @@ class TradingBotOrchestrator:
                 last_msg_id = self.mapping_service.get_last_target_message(
                     trade.trade_id, dest['channel_id']
                 )
+                logger.debug(f"Last target message for {trade.trade_id} in {dest['channel_id']}: {last_msg_id}")
+
                 payload = {
                     'channel_id': dest['channel_id'],
                     'text': tg_text,
@@ -304,18 +325,18 @@ class TradingBotOrchestrator:
                 )
                 if outbox_id:
                     result['outbox_ids'].append({'platform': 'telegram_target', 'id': outbox_id})
+                    logger.info(f"Enqueued target channel message: {outbox_id}")
 
             result['success'] = True
 
-            # CRITICAL FIX: Only ONE commit at the end
+            # 7. COMMIT TRANSACTION (atomic: trade update + outbox messages)
             session.commit()
-
-            # CRITICAL FIX: DO NOT call run_once() here
-            # Outbox processing happens separately
+            logger.info(f"=== PROCESS COMMAND COMPLETE ===")
 
         except Exception as e:
             session.rollback()
             result['errors'].append(str(e))
+            logger.error(f"Error in process_command: {e}", exc_info=True)
         finally:
             session.close()
 
@@ -337,9 +358,7 @@ class TradingBotOrchestrator:
             'mappings_count': len(self.mapping_service.get_all_mappings())
         }
 
-
 _orchestrator = None
-
 
 def get_orchestrator():
     global _orchestrator

@@ -1,10 +1,11 @@
-"""
-Config-driven Command Executor - PRODUCTION VERSION (FIXED)
+"""Config-driven Command Executor - PRODUCTION VERSION (FIXED)
 Drop-in replacement with:
 - Transaction safety (NO commit inside, caller manages it)
 - Closed trade protection
 - Guaranteed snapshot rebuild
 - Audit logging with before/after state
+- FIXED: TARGETMET handler (resolves price from trade history)
+- FIXED: Better debug logging
 """
 from typing import Dict, Any, Optional, Callable, List
 from dataclasses import dataclass
@@ -24,7 +25,6 @@ from sqlalchemy import select, update
 
 logger = logging.getLogger(__name__)
 
-
 @dataclass
 class ExecutionResult:
     """Result of command execution (UNCHANGED INTERFACE)"""
@@ -33,7 +33,6 @@ class ExecutionResult:
     message_type: Optional[str]
     variables: Dict[str, Any]
     error: Optional[str] = None
-
 
 class ConfigExecutor:
     """
@@ -51,6 +50,7 @@ class ConfigExecutor:
         self.db = Database()
         self.handlers: Dict[str, Callable] = {}
         self._register_handlers()
+        logger.info(f"ConfigExecutor initialized with handlers: {list(self.handlers.keys())}")
 
     def _register_handlers(self):
         """Register command handlers from config"""
@@ -63,6 +63,9 @@ class ConfigExecutor:
                 handler_name = f"_handle_{cmd.lower()}"
                 if hasattr(self, handler_name):
                     self.handlers[cmd] = getattr(self, handler_name)
+                    logger.debug(f"Registered handler for {cmd}")
+                else:
+                    logger.warning(f"No handler found for command: {cmd}")
 
     def _generate_idempotency_key(self, trade_id: str, command: str, payload: Dict) -> str:
         normalized = json.dumps(payload, sort_keys=True, default=str)
@@ -190,9 +193,12 @@ class ConfigExecutor:
 
         CRITICAL: Does NOT commit session. Caller must commit.
         """
+        logger.info(f"Executing command: {parsed.subcommand} for trade {trade.trade_id}")
+
         handler = self.handlers.get(parsed.subcommand)
 
         if not handler:
+            logger.error(f"No handler for command: {parsed.subcommand}")
             return ExecutionResult(
                 success=False,
                 trade=trade,
@@ -205,11 +211,12 @@ class ConfigExecutor:
         try:
             # Get trade DB ID
             result = session.execute(
-                select(TradeModel.id, TradeModel.side, TradeModel.stop_loss, TradeModel.status)
+                select(TradeModel.id, TradeModel.side, TradeModel.stop_loss, TradeModel.status, TradeModel.target)
                 .where(TradeModel.trade_id == trade.trade_id)
             ).first()
 
             if not result:
+                logger.error(f"Trade not found in DB: {trade.trade_id}")
                 return ExecutionResult(
                     success=False,
                     trade=trade,
@@ -218,10 +225,12 @@ class ConfigExecutor:
                     error=f"Trade not found in DB: {trade.trade_id}"
                 )
 
-            trade_db_id, side, stop_loss, status = result
+            trade_db_id, side, stop_loss, status, target = result
+            logger.debug(f"Trade DB ID: {trade_db_id}, status: {status}, side: {side}")
 
             # CLOSED TRADE PROTECTION
             if status in ("CLOSED", "CANCELLED", "NOT_TRIGGERED"):
+                logger.warning(f"Trade {trade.trade_id} is already {status}, rejecting update")
                 return ExecutionResult(
                     success=False,
                     trade=trade,
@@ -232,6 +241,22 @@ class ConfigExecutor:
 
             # Build payload
             payload = self._build_payload(parsed)
+
+            # Resolve price for TARGETMET from trade history
+            if parsed.subcommand == 'TARGET' and parsed.price is None:
+                # Get latest target from trade
+                if target:
+                    parsed.price = float(target)
+                    logger.info(f"Resolved TARGET price from trade: {parsed.price}")
+                else:
+                    logger.error("TARGETMET command but no target price in trade")
+                    return ExecutionResult(
+                        success=False,
+                        trade=trade,
+                        message_type=None,
+                        variables={},
+                        error="No target price found for trade"
+                    )
 
             # Idempotency check
             idempotency_key = self._generate_idempotency_key(
@@ -251,6 +276,7 @@ class ConfigExecutor:
             before_state = self._capture_state(session, trade_db_id)
 
             # Execute handler
+            logger.debug(f"Calling handler for {parsed.subcommand}")
             result = await handler(
                 session=session,
                 trade=trade,
@@ -259,6 +285,8 @@ class ConfigExecutor:
                 side=side,
                 stop_loss=stop_loss
             )
+
+            logger.info(f"Handler result: success={result.success}, message_type={result.message_type}")
 
             # GUARANTEED SNAPSHOT REBUILD (before commit)
             if result.success:
@@ -315,7 +343,7 @@ class ConfigExecutor:
     # ===== HANDLERS =====
 
     async def _handle_trail(self, session, trade: Trade, trade_db_id: int,
-                            parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                          parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         if not parsed.price:
             return ExecutionResult(
                 success=False, trade=trade, message_type=None,
@@ -341,7 +369,7 @@ class ConfigExecutor:
         )
 
     async def _handle_partial(self, session, trade: Trade, trade_db_id: int,
-                            parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                              parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         from core.fifo_engine import FIFOEngine
 
         if not parsed.price:
@@ -402,7 +430,7 @@ class ConfigExecutor:
         return await self._handle_partial(session, trade, trade_db_id, parsed, side, stop_loss)
 
     async def _handle_closed(self, session, trade: Trade, trade_db_id: int,
-                             parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                            parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         from core.fifo_engine import FIFOEngine
 
         if not parsed.price:
@@ -459,7 +487,8 @@ class ConfigExecutor:
         )
 
     async def _handle_target(self, session, trade: Trade, trade_db_id: int,
-                             parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                            parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+        """Handle TARGET and TARGETMET commands"""
         result = await self._handle_closed(session, trade, trade_db_id, parsed, side, stop_loss)
         if result.success:
             result.message_type = 'target_hit_specific'
@@ -521,7 +550,7 @@ class ConfigExecutor:
         )
 
     async def _handle_note(self, session, trade: Trade, trade_db_id: int,
-                           parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                          parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         return ExecutionResult(
             success=True,
             trade=trade,
@@ -554,7 +583,7 @@ class ConfigExecutor:
         )
 
     async def _handle_not_triggered(self, session, trade: Trade, trade_db_id: int,
-                                      parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
+                                    parsed: ParsedCommand, side: str, stop_loss) -> ExecutionResult:
         session.execute(
             update(TradeModel).where(TradeModel.id == trade_db_id)
             .values(status='NOT_TRIGGERED')
@@ -619,7 +648,6 @@ class ConfigExecutor:
 
 
 _executor = None
-
 
 def get_executor():
     global _executor

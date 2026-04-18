@@ -1,501 +1,381 @@
-""" Telegram Bot Integration - Fully Config-Driven with Outbox Pattern + Rate Limiting
-Receives messages, processes through orchestrator. Uses python-telegram-bot v20+ (async)
-Pipeline: CONFIG → ROUTER → EXECUTOR → SERVICE → FORMATTER → MAPPING → OUTBOX → PUBLISHER
-FIXED: Rate limiting now at TOP of handler, preserves exact original flow.
-FIXED: Safe message access (effective_message) for channel posts.
-FIXED: Outbox handler registered.
-FIXED: Admin caption editing, image forwarding, target message ID tracking, reply threading.
-FIXED: Safe lock release in finally block (no lock leaks).
-FIXED: BytesIO.seek(0) for image handling.
-FIXED: Commands now require /update prefix and exact command names.
-FIXED: Commands only accepted from admin channel.
-FIXED: Auto-cleanup of temp_images after processing.
-FIXED: Safe access to delete_command config attribute.
+"""Telegram Bot Handler - PRODUCTION VERSION (FIXED)
+FIXED: Commands work exactly like old bot:
+- /update targetmet (no price)
+- /update closehalf (no price)
+- /update trail 4800 (with price)
+- /update stopped 4750 (with price)
+- Case insensitive
+- Uses config command_mapping
+ADDED: Better debug logging
+ADDED: resolve_trade_id_robust() for reply-based flow
 """
-
-import logging
 import os
-import asyncio
-import uuid
-from io import BytesIO
-from pathlib import Path
-from typing import Optional
-
+import tempfile
+import logging
+from typing import Optional, Dict, Any
 from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
     filters,
-    ContextTypes,
+    ContextTypes
 )
 
 from config.config_loader import config
 from orchestration.orchestrator import get_orchestrator
 from messaging.message_mapping_service import get_mapping_service
 from core.repositories import RepositoryFactory
-from core.rate_limit_manager import get_rate_limit_manager
-from core.outbox import get_outbox
 
 logger = logging.getLogger(__name__)
 
-TEMP_IMAGE_DIR = Path("temp_images")
-TEMP_IMAGE_DIR.mkdir(exist_ok=True)
+class TelegramBot:
+    """Telegram bot with proper command handling"""
 
-# Get admin channel from config
-ADMIN_CHANNEL_ID = config.system_config.get('admin_channel', None)
-
-
-class TradingBot:
-    """Telegram bot for trading signal processing - fully config-driven with outbox."""
-
-    def __init__(self, token: Optional[str] = None):
-        self.token = token or os.getenv("TELEGRAM_BOT_TOKEN")
-        if not self.token:
-            raise ValueError("TELEGRAM_BOT_TOKEN not set")
-
+    def __init__(self):
         self.cfg = config
         self.orchestrator = get_orchestrator()
         self.mapping_service = get_mapping_service()
-        self.trade_repo = RepositoryFactory.get_trade_repository()
-        self.rate_limiter = get_rate_limit_manager()
+        self.db = RepositoryFactory.get_database()
+        self.token = os.getenv('TELEGRAM_BOT_TOKEN')
+        self.admin_channel = int(os.getenv('ADMIN_CHANNEL_ID', '0'))
 
-        # Build application
-        self.application = Application.builder().token(self.token).build()
-        self._setup_handlers()
-        self._setup_outbox_handler()
+        if not self.token:
+            raise ValueError("TELEGRAM_BOT_TOKEN not set")
+        if not self.admin_channel:
+            raise ValueError("ADMIN_CHANNEL_ID not set")
 
-        logger.info(f"TradingBot initialized (admin_channel: {ADMIN_CHANNEL_ID})")
+        logger.info(f"TelegramBot initialized with admin channel: {self.admin_channel}")
 
-    def _setup_handlers(self):
-        """Setup message handlers – also handle channel posts."""
-        # Command handlers
-        self.application.add_handler(CommandHandler("start", self._cmd_start))
-        self.application.add_handler(CommandHandler("help", self._cmd_help))
-        self.application.add_handler(CommandHandler("status", self._cmd_status))
+    def resolve_trade_id_robust(self, update: Update) -> Optional[str]:
+        """
+        Resolve trade_id from reply context.
 
-        # Photo handler – works for private chats, groups, AND channels
-        self.application.add_handler(
-            MessageHandler(filters.PHOTO, self._handle_image)
-        )
+        CRITICAL: Commands ONLY work when replying to a trade message.
+        This ensures proper thread tracking and prevents orphaned updates.
+        """
+        message = update.channel_post or update.message
+        if not message:
+            logger.debug("No message in update")
+            return None
 
-        # Text handler – works for private chats, groups, AND channels
-        self.application.add_handler(
-            MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text)
-        )
+        # Check if this is a reply to another message
+        replied_msg = getattr(message, 'reply_to_message', None)
+        if not replied_msg:
+            logger.debug("Message is not a reply")
+            return None
 
-        self.application.add_error_handler(self._handle_error)
+        replied_id = replied_msg.message_id
+        logger.debug(f"Message is reply to: {replied_id}")
 
-    def _setup_outbox_handler(self):
-        """Register a real Telegram handler with the outbox manager."""
-        outbox = get_outbox()
-        outbox.register_handler("telegram", self._outbox_telegram_handler)
+        # Try to find mapping for the replied message
+        mapping = self.mapping_service.get_mapping(replied_id)
 
-    def _is_admin_channel(self, chat_id: int) -> bool:
-        """Check if message is from admin channel."""
-        if ADMIN_CHANNEL_ID is None:
-            return True  # If not configured, accept from anywhere (backward compat)
-        return chat_id == ADMIN_CHANNEL_ID
+        if mapping:
+            logger.info(f"Found mapping for reply_to {replied_id}: trade_id={mapping.trade_id}")
+            return mapping.trade_id
 
-    async def _outbox_telegram_handler(self, payload: dict):
-        """Outbox handler that actually sends messages and photos via the bot."""
-        channel_id = payload.get("channel_id")
-        text = payload.get("text")
-        reply_to = payload.get("reply_to_message_id")
-        photo_path = payload.get("photo_path")
-        trade_id = payload.get("trade_id")
+        # If no direct mapping, try to find any mapping that references this message
+        # (for nested replies)
+        all_mappings = self.mapping_service.get_all_mappings()
+        for m in all_mappings:
+            if m.parent_main_msg_id == replied_id:
+                logger.info(f"Found parent mapping via parent_main_msg_id: trade_id={m.trade_id}")
+                return m.trade_id
 
-        if not channel_id or not text:
-            logger.error("Outbox payload missing channel_id or text")
+        logger.warning(f"No mapping found for reply_to message {replied_id}")
+        return None
+
+    async def handle_update_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /update command - EXACT old bot behavior.
+
+        Commands must be replies to trade messages.
+        Examples:
+        - /update targetmet
+        - /update closehalf
+        - /update trail 4800
+        - /update stopped 4750
+        """
+        message = update.channel_post or update.message
+        if not message:
             return
 
-        try:
-            if photo_path and os.path.exists(photo_path):
-                with open(photo_path, 'rb') as photo_file:
-                    sent = await self.application.bot.send_photo(
-                        chat_id=channel_id,
-                        photo=photo_file,
-                        caption=text,
-                        reply_to_message_id=reply_to,
-                        parse_mode="HTML",
-                    )
-            else:
-                sent = await self.application.bot.send_message(
-                    chat_id=channel_id,
-                    text=text,
-                    reply_to_message_id=reply_to,
-                    parse_mode="HTML",
-                )
+        command_text = message.text or message.caption or ""
+        message_id = message.message_id
 
-            # Store target message ID for reply threading
-            if trade_id and sent and hasattr(sent, 'message_id'):
-                try:
-                    self.mapping_service.add_target_message(trade_id, channel_id, sent.message_id)
-                except Exception as e:
-                    logger.warning(f"Failed to store target message ID: {e}")
+        logger.info(f"=== HANDLE UPDATE COMMAND ===")
+        logger.info(f"Command text: '{command_text}'")
+        logger.info(f"Message ID: {message_id}")
+        logger.info(f"Chat ID: {message.chat_id}")
 
-        except Exception as e:
-            error_str = str(e).lower()
-            # Fallback to plain text if HTML parsing fails
-            if "can't parse" in error_str or "html" in error_str:
-                logger.warning(f"HTML parse failed, retrying as plain text: {e}")
-                try:
-                    if photo_path and os.path.exists(photo_path):
-                        with open(photo_path, 'rb') as photo_file:
-                            sent = await self.application.bot.send_photo(
-                                chat_id=channel_id,
-                                photo=photo_file,
-                                caption=text,
-                                reply_to_message_id=reply_to,
-                                parse_mode=None,
-                            )
-                    else:
-                        sent = await self.application.bot.send_message(
-                            chat_id=channel_id,
-                            text=text,
-                            reply_to_message_id=reply_to,
-                            parse_mode=None,
-                        )
-
-                    if trade_id and sent and hasattr(sent, 'message_id'):
-                        try:
-                            self.mapping_service.add_target_message(trade_id, channel_id, sent.message_id)
-                        except Exception as e2:
-                            logger.warning(f"Failed to store target message ID on fallback: {e2}")
-                    return
-                except Exception as e2:
-                    logger.exception(f"Plain text fallback also failed: {e2}")
-                    raise
-            logger.exception(f"Outbox send failed: {e}")
-            raise
-
-    async def _cleanup_temp_image(self, photo_path: Optional[str]):
-        """Clean up temp image file after processing."""
-        if photo_path and os.path.exists(photo_path):
-            try:
-                os.remove(photo_path)
-                logger.info(f"Cleaned up temp image: {photo_path}")
-            except Exception as e:
-                logger.warning(f"Failed to cleanup temp image {photo_path}: {e}")
-
-    async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /start command."""
-        msg = update.effective_message
-        if not msg:
-            return
-        await msg.reply_text(
-            "🚀 Trading Bot Ready (Config-Driven v2.0 + Outbox)\n\n"
-            "Send me a chart image to create a trade setup\n"
-            "Reply to trade messages with update commands.\n\n"
-            "Available: trail, closed, target, stopped,\n"
-            "breakeven, partial, closehalf, pyramid, note, cancel"
-        )
-
-    async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /help command."""
-        msg = update.effective_message
-        if not msg:
-            return
-        handlers = self.orchestrator.executor.list_handlers()
-        await msg.reply_text(
-            f"📚 Config-Driven Trading Bot v{config.system.version}\n\n"
-            f"Handlers: {', '.join(handlers[:8])}...\n\n"
-            "Reply to any trade message with:\n"
-            "• trail - Update trailing stop\n"
-            "• closed - Close trade\n"
-            "• target - Target hit\n"
-            "• stopped - Stopped out\n"
-            "• breakeven - Close at breakeven\n"
-            "• partial [%] - Partial close (FIFO)\n"
-            "• closehalf - Close 50% (FIFO)\n"
-            "• pyramid [%] - Add to position\n"
-            "• note - Add note\n"
-            "• cancel [reason] - Cancel trade"
-        )
-
-    async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /status command."""
-        msg = update.effective_message
-        if not msg:
-            return
-        status = self.orchestrator.get_system_status()
-        await msg.reply_text(
-            f"📊 System Status\n"
-            f"Version: {status['config_version']}\n"
-            f"Handlers: {', '.join(status['handlers_registered'])}\n"
-            f"Open Trades: {status['trade_stats']['open_trades']}"
-        )
-
-    async def _handle_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle incoming chart images."""
-        msg = update.effective_message
-        if not msg:
-            return
-        if not msg.photo:
-            await msg.reply_text("❌ No photo found")
+        # Check if in admin channel
+        if message.chat_id != self.admin_channel:
+            logger.warning(f"Command from non-admin channel: {message.chat_id}")
             return
 
-        # Check admin channel
-        if not self._is_admin_channel(msg.chat_id):
-            logger.warning(f"Image received from non-admin channel: {msg.chat_id}")
-            return
+        # Get reply_to_message_id
+        reply_to_id = None
+        replied_msg = getattr(message, 'reply_to_message', None)
+        if replied_msg:
+            reply_to_id = replied_msg.message_id
+            logger.info(f"Reply to message: {reply_to_id}")
 
-        # Rate limiting guard
-        if not self.rate_limiter.allow_global_send():
-            await msg.reply_text("⏳ Global rate limit reached. Please wait.")
-            return
-
-        # Download the largest photo
-        photo_file = await msg.photo[-1].get_file()
-        image_bytes = await photo_file.download_as_bytearray()
-
-        # Save image to temp file for forwarding pipeline
+        # Check if this is an image update (has photo)
+        is_image_update = bool(message.photo)
         photo_path = None
-        try:
-            photo_path = TEMP_IMAGE_DIR / f"{msg.message_id}_{uuid.uuid4().hex[:8]}.jpg"
-            # Use BytesIO for safe handling
-            image_buffer = BytesIO(image_bytes)
-            image_buffer.seek(0)
-            with open(photo_path, 'wb') as f:
-                f.write(image_buffer.read())
-            logger.info(f"Saved temp image: {photo_path}")
-        except Exception as e:
-            logger.warning(f"Failed to save temp image: {e}")
-            photo_path = None
 
-        # Check if this is an update command on an image
-        caption = msg.caption or ""
-        is_update_command = (
-            msg.reply_to_message is not None or
-            '/update' in caption.lower() or
-            'update ' in caption.lower() or
-            'trail ' in caption.lower() or
-            'closed ' in caption.lower() or
-            'target ' in caption.lower() or
-            'stopped ' in caption.lower() or
-            'breakeven' in caption.lower() or
-            'partial ' in caption.lower() or
-            'closehalf ' in caption.lower() or
-            'cancel' in caption.lower() or
-            'note ' in caption.lower() or
-            'newtarget ' in caption.lower() or
-            'stop ' in caption.lower() or
-            'pyramid ' in caption.lower()
+        if is_image_update:
+            logger.info("Processing as image update (has photo)")
+            # Download photo if present
+            try:
+                photo = message.photo[-1]  # Get largest photo
+                file = await photo.get_file()
+                photo_path = os.path.join(tempfile.gettempdir(), f"telegram_{message_id}.jpg")
+                await file.download_to_drive(photo_path)
+                logger.info(f"Downloaded photo to: {photo_path}")
+            except Exception as e:
+                logger.error(f"Failed to download photo: {e}")
+
+        # Process command through orchestrator
+        result = await self.orchestrator.process_command(
+            command_text=command_text,
+            reply_to_message_id=reply_to_id,
+            admin_channel_id=self.admin_channel,
+            photo_path=photo_path,
+            is_image_update=is_image_update
         )
 
-        if is_update_command:
-            logger.info(f"Update command detected in image caption. Routing with photo_path.")
-            await self._handle_text(update, context, photo_path=str(photo_path) if photo_path else None)
-            # Cleanup happens in _handle_text -> _process_command -> finally block
-            return
+        logger.info(f"Orchestrator result: success={result['success']}, errors={result['errors']}")
 
-        try:
-            # Process trade setup
-            result = await self.orchestrator.process_image(
-                image_bytes=bytes(image_bytes),
-                admin_channel_id=msg.chat_id,
-                message_id=msg.message_id,
-                photo_path=str(photo_path) if photo_path else None
-            )
-
-            if not result.get("success"):
-                errors = result.get("errors", [])
-                error = errors[0] if errors else "Unknown error"
-                await msg.reply_text(f"❌ OCR failed: {error}")
-                return
-
-            # Edit admin message caption with formatted trade signal
-            formatted_text = result.get("formatted_text")
-            if formatted_text:
+        # Handle result
+        if result['success']:
+            if is_image_update:
+                # Edit the image caption with the formatted update
                 try:
                     await context.bot.edit_message_caption(
-                        chat_id=msg.chat_id,
-                        message_id=msg.message_id,
-                        caption=formatted_text,
-                        parse_mode="HTML"
+                        chat_id=self.admin_channel,
+                        message_id=message_id,
+                        caption=result['formatted_text']
                     )
-                    logger.info(f"Edited admin message {msg.message_id} caption with trade setup")
+                    logger.info(f"Edited image caption for message {message_id}")
                 except Exception as e:
-                    logger.warning(f"Could not edit admin caption: {e}")
-
-            self.rate_limiter.record_global_send()
-
-            # REMOVED: Redundant "Trade created" confirmation message
-            # The formatted caption on the image is sufficient
-            trade = result.get("trade")
-            if trade:
-                logger.info(f"Trade created from image: {trade.symbol}")
-
-        except Exception as e:
-            logger.exception("Error processing image")
-            await msg.reply_text(f"❌ Error: {str(e)}")
-        finally:
-            # Cleanup temp image
-            await self._cleanup_temp_image(str(photo_path) if photo_path else None)
-
-    async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE, photo_path: str = None):
-        """Handle incoming text messages (commands)."""
-        msg = update.effective_message
-        if not msg:
-            return
-        text = msg.text.strip() if msg.text else ""
-
-        # If routed from image handler, use caption as text
-        if not text and msg.caption:
-            text = msg.caption.strip()
-
-        # Check admin channel
-        if not self._is_admin_channel(msg.chat_id):
-            logger.warning(f"Command received from non-admin channel: {msg.chat_id}")
-            return
-
-        reply_to = msg.reply_to_message
-
-        if not reply_to:
-            await msg.reply_text(
-                "ℹ️ Please reply to a trade message with a command.\n"
-                "Or send an image to create a new trade."
-            )
-            return
-
-        await self._process_command(
-            update, context, command_text=text, reply_to_msg_id=reply_to.message_id, photo_path=photo_path
-        )
-
-    async def _process_command(
-        self,
-        update: Update,
-        context: ContextTypes.DEFAULT_TYPE,
-        command_text: str,
-        reply_to_msg_id: int,
-        photo_path: str = None,
-    ):
-        """Process command through orchestrator with outbox and rate limiting."""
-        msg = update.effective_message
-        if not msg:
-            return
-
-        # RESOLVE TRADE_ID FIRST
-        mapping = self.mapping_service.get_mapping(reply_to_msg_id)
-        if not mapping:
-            await msg.reply_text("❌ No trade found for this message")
-            return
-        trade_id = mapping.trade_id
-
-        # CRITICAL FIX: Use try/finally to ensure lock is always released and temp files cleaned
-        lock_acquired = False
-        try:
-            # RATE LIMIT GUARDS (TOP OF HANDLER)
-            # 1. Check for exact duplicate
-            if self.rate_limiter.is_duplicate(command_text, trade_id):
-                logger.info(f"Duplicate command blocked: {command_text[:20]}... for trade {trade_id}")
-                await msg.reply_text("⚠️ Duplicate command detected. Ignored.")
-                return
-
-            # 2. Check per-trade-command cooldown
-            if not self.rate_limiter.allow_trade_update(trade_id, command_text):
-                cooldown = self.rate_limiter.get_cooldown_remaining(trade_id, command_text)
-                logger.info(f"Rate limit hit for trade {trade_id}: {cooldown:.1f}s remaining")
-                await msg.reply_text(f"⏳ Please wait {cooldown:.1f}s before repeating this command")
-                return
-
-            # 3. Check global rate limit
-            if not self.rate_limiter.allow_global_send():
-                logger.warning("Global rate limit hit")
-                await msg.reply_text("⏳ Global rate limit reached. Please wait.")
-                return
-
-            # 4. Acquire lock to prevent concurrent updates to same trade
-            if not self.rate_limiter.acquire_update_lock(trade_id):
-                await msg.reply_text("⏳ Update already in progress. Please wait.")
-                return
-            lock_acquired = True
-
-            result = await self.orchestrator.process_command(
-                command_text=command_text,
-                reply_to_message_id=reply_to_msg_id,
-                admin_channel_id=msg.chat_id,
-                photo_path=photo_path,
-                is_image_update=msg.photo is not None
-            )
-
-            if not result or not result.get("success"):
-                error_msg = result["errors"][0] if result and result.get("errors") else "Command failed"
-                await msg.reply_text(f"❌ {error_msg}")
-                return
-
-            # For image updates, edit the caption instead of sending text reply
-            if msg.photo and result.get("formatted_text"):
-                try:
-                    await context.bot.edit_message_caption(
-                        chat_id=msg.chat_id,
-                        message_id=msg.message_id,
-                        caption=result["formatted_text"],
-                        parse_mode="HTML"
-                    )
-                    logger.info(f"Edited update image caption for msg {msg.message_id}")
-                except Exception as e:
-                    logger.warning(f"Could not edit update image caption: {e}")
+                    logger.error(f"Failed to edit image caption: {e}")
             else:
-                # For text-only updates, outbox already sent admin reply.
-                pass
-
-            self.rate_limiter.record_trade_update(trade_id, command_text)
-            self.rate_limiter.record_global_send()
-
-            # FIXED: Safe access to delete_command using .get() with default
-            cmd_config = config.commands.get("/update", {})
-            delete_cmd = cmd_config.get("delete_command", False) if isinstance(cmd_config, dict) else False
-            if delete_cmd and not msg.photo:
+                # Delete the command message (text command)
                 try:
-                    await msg.delete()
-                except Exception:
-                    pass
+                    await context.bot.delete_message(
+                        chat_id=self.admin_channel,
+                        message_id=message_id
+                    )
+                    logger.info(f"Deleted command message {message_id}")
+                except Exception as e:
+                    logger.warning(f"Could not delete command message: {e}")
+        else:
+            # Send error message
+            error_text = "\n".join(result['errors']) if result['errors'] else "Command failed"
+            try:
+                error_msg = await context.bot.send_message(
+                    chat_id=self.admin_channel,
+                    text=f"❌ {error_text}",
+                    reply_to_message_id=message_id
+                )
+                # Auto-delete error after 5 seconds
+                import asyncio
+                await asyncio.sleep(5)
+                await context.bot.delete_message(
+                    chat_id=self.admin_channel,
+                    message_id=error_msg.message_id
+                )
+            except Exception as e:
+                logger.error(f"Failed to send error message: {e}")
 
-            logger.info(f"Command processed: {command_text}")
+        logger.info(f"=== HANDLE UPDATE COMMAND COMPLETE ===")
+
+    async def handle_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle image posted in admin channel (trade setup)"""
+        message = update.channel_post or update.message
+        if not message or not message.photo:
+            return
+
+        logger.info(f"=== HANDLE IMAGE ===")
+        logger.info(f"Message ID: {message.message_id}")
+
+        # Check if in admin channel
+        if message.chat_id != self.admin_channel:
+            logger.debug(f"Image from non-admin channel: {message.chat_id}")
+            return
+
+        # Check for /update in caption
+        caption = message.caption or ""
+        if '/update' in caption.lower():
+            logger.info("Image has /update in caption, routing to update handler")
+            await self.handle_update_command(update, context)
+            return
+
+        # Check for /watch command
+        if caption.lower().startswith('/watch'):
+            logger.info("Image has /watch command, routing to watchlist handler")
+            await self.handle_watch_command(update, context)
+            return
+
+        # Process as new trade setup
+        try:
+            photo = message.photo[-1]
+            file = await photo.get_file()
+            photo_bytes = await file.download_as_bytearray()
+            photo_path = os.path.join(tempfile.gettempdir(), f"telegram_setup_{message.message_id}.jpg")
+            await file.download_to_drive(photo_path)
+
+            result = await self.orchestrator.process_image(
+                image_bytes=bytes(photo_bytes),
+                admin_channel_id=self.admin_channel,
+                message_id=message.message_id,
+                photo_path=photo_path
+            )
+
+            if result['success'] and result['formatted_text']:
+                # Edit the admin message with formatted trade setup
+                try:
+                    await context.bot.edit_message_caption(
+                        chat_id=self.admin_channel,
+                        message_id=message.message_id,
+                        caption=result['formatted_text']
+                    )
+                    logger.info(f"Edited admin message {message.message_id} with trade setup")
+                except Exception as e:
+                    logger.error(f"Failed to edit admin message: {e}")
+
+            if not result['success']:
+                logger.warning(f"Image processing failed: {result['errors']}")
 
         except Exception as e:
-            logger.exception("Error processing command")
-            await msg.reply_text(f"❌ Error: {str(e)}")
-        finally:
-            # CRITICAL FIX: RELEASE LOCK (always, even if exception occurred)
-            if lock_acquired:
-                self.rate_limiter.release_update_lock(trade_id)
-            # CRITICAL FIX: Cleanup temp image
-            await self._cleanup_temp_image(photo_path)
+            logger.error(f"Error processing image: {e}", exc_info=True)
 
-    async def _handle_error(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle errors."""
-        logger.error(f"Update {update} caused error {context.error}")
-        msg = update.effective_message if update else None
-        if msg:
-            await msg.reply_text("❌ An error occurred. Please try again.")
+        logger.info(f"=== HANDLE IMAGE COMPLETE ===")
 
-    async def post_init(self, application: Application):
-        """Post-initialization hook - start outbox processor."""
-        logger.info("Starting outbox processor...")
+    async def handle_watch_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /watch command for watchlist"""
+        message = update.channel_post or update.message
+        if not message:
+            return
+
+        logger.info("=== HANDLE WATCH COMMAND ===")
+        # Watchlist implementation would go here
+        # For now, just log it
+        logger.info("Watch command received (implementation pending)")
+        logger.info(f"=== HANDLE WATCH COMMAND COMPLETE ===")
+
+    async def handle_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /help command"""
+        message = update.channel_post or update.message
+        if not message:
+            return
+
+        help_text = """
+🤖 **Trading Bot Commands**
+
+**Trade Setup:**
+Post chart image in admin channel
+Bot analyzes and forwards to Telegram + Twitter
+
+**Position Updates (reply to trade):**
+• `/update targetmet` - Target hit
+• `/update closehalf` - Close 50%
+• `/update trail 4800` - Trailing stop
+• `/update stopped 4750` - Stopped out
+• `/update closed 4800` - Close trade
+• `/update breakeven` - Close at entry
+• `/update partial 4800 25` - Close 25%
+• `/update note watching resistance` - Add note
+• `/update cancel` - Cancel trade
+
+**Requirements:**
+- Commands must reply to trade message
+- Case insensitive
+- Price optional for some commands
+        """
+
+        await message.reply_text(help_text)
+
+    async def handle_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /status command"""
+        message = update.channel_post or update.message
+        if not message:
+            return
+
+        status = self.orchestrator.get_system_status()
+        status_text = f"""
+📊 **System Status**
+
+Version: {status['config_version']}
+Handlers: {', '.join(status['handlers_registered'])}
+Mappings: {status['mappings_count']}
+        """
+
+        await message.reply_text(status_text)
+
+    async def start(self):
+        """Start the bot"""
+        logger.info("Starting Telegram Bot...")
+
+        app = Application.builder().token(self.token).build()
+
+        # Command handlers
+        app.add_handler(CommandHandler("update", self.handle_update_command, 
+                                       filters=filters.Chat(chat_id=self.admin_channel)))
+        app.add_handler(CommandHandler("help", self.handle_help,
+                                       filters=filters.Chat(chat_id=self.admin_channel)))
+        app.add_handler(CommandHandler("status", self.handle_status,
+                                       filters=filters.Chat(chat_id=self.admin_channel)))
+
+        # Message handlers
+        app.add_handler(MessageHandler(
+            filters.Chat(chat_id=self.admin_channel) & filters.PHOTO,
+            self.handle_image
+        ))
+
+        # Error handler
+        app.add_error_handler(self._error_handler)
+
+        # Start outbox processor in background
+        import asyncio
         asyncio.create_task(self.orchestrator.start_outbox_processor(interval=5.0))
 
-    async def post_shutdown(self, application: Application):
-        """Post-shutdown hook - stop outbox processor."""
-        logger.info("Stopping outbox processor...")
-        self.orchestrator.stop_outbox_processor()
+        logger.info("Bot started, beginning polling...")
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+
+        # Keep running
+        try:
+            while True:
+                await asyncio.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("Shutting down...")
+            self.orchestrator.stop_outbox_processor()
+            await app.stop()
+
+    async def _error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle errors"""
+        logger.error(f"Error: {context.error}", exc_info=True)
 
     def run(self):
-        """Start the bot (blocking)."""
-        logger.info("Starting Telegram bot polling...")
-        self.application.post_init = self.post_init
-        self.application.post_shutdown = self.post_shutdown
-        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+        """Run the bot (synchronous wrapper for start)."""
+        import asyncio
+        asyncio.run(self.start())
 
-    async def initialize(self):
-        """Initialize the bot (non-blocking)."""
-        await self.application.initialize()
-        await self.application.start()
-        asyncio.create_task(self.orchestrator.start_outbox_processor(interval=5.0))
+# BACKWARD COMPATIBILITY: main.py imports TradingBot
+TradingBot = TelegramBot
 
-    async def shutdown(self):
-        """Shutdown the bot."""
-        self.orchestrator.stop_outbox_processor()
-        await self.application.stop()
-        await self.application.shutdown()
+# Singleton
+_bot = None
+
+def get_telegram_bot() -> TelegramBot:
+    global _bot
+    if _bot is None:
+        _bot = TelegramBot()
+    return _bot
+
+
+# BACKWARD COMPATIBILITY: main.py imports TradingBot
+TradingBot = TelegramBot
